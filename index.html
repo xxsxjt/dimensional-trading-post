@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>时空交易行</title>
+  <link rel="stylesheet" href="/src/styles/main.css" />
+  <link rel="stylesheet" href="/src/styles/counter.css" />
+  <link rel="stylesheet" href="/src/styles/inventory.css" />
+  <link rel="stylesheet" href="/src/styles/base.css" />
+  <link rel="stylesheet" href="/src/styles/calendar.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top bar -->
+    <header id="topbar">
+      <div id="shop-name">⚡ 时空交易行</div>
+      <nav id="tab-nav">
+        <button class="tab-btn active" data-tab="counter">🏪 柜台</button>
+        <button class="tab-btn" data-tab="base">🏗️ 基地</button>
+        <button class="tab-btn" data-tab="calendar">📅 日历</button>
+        <button class="tab-btn" data-tab="ledger">📒 账本</button>
+      </nav>
+      <div id="hud">
+        <span id="hud-gold">💰 <span id="gold-val">1000</span></span>
+        <span id="hud-day">📆 第 <span id="day-val">1</span> 天</span>
+        <span id="hud-rep">⭐ <span id="rep-val">0</span></span>
+      </div>
+    </header>
+
+    <!-- Tab panels -->
+    <main id="tab-panels">
+      <div id="tab-counter" class="tab-panel active"></div>
+      <div id="tab-base"    class="tab-panel"></div>
+      <div id="tab-calendar" class="tab-panel"></div>
+      <div id="tab-ledger"  class="tab-panel"></div>
+    </main>
+
+    <!-- Global overlays -->
+    <div id="overlay-backdrop" class="hidden"></div>
+    <div id="item-detail-panel" class="hidden"></div>
+    <div id="night-report-modal" class="hidden"></div>
+    <div id="tooltip" class="hidden"></div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

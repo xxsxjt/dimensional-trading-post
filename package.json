@@ -1,0 +1,14 @@
+{
+  "name": "dimensional-trading-post",
+  "version": "0.1.0",
+  "description": "时空交易行 — trade goods across 11 parallel worlds",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}

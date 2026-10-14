@@ -1,0 +1,119 @@
+/* ===== BASE TAB ===== */
+#tab-base {
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  overflow: hidden;
+  height: 100%;
+}
+
+.base-left {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.base-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+/* Portal list */
+.portal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.portal-item {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.portal-item:hover { border-color: var(--c-border2); }
+.portal-item.active { border-color: var(--c-gold); box-shadow: 0 0 8px var(--c-glow); }
+.portal-item.locked { opacity: 0.5; cursor: not-allowed; }
+.portal-item .portal-name { font-size: 12px; color: var(--c-text); }
+.portal-item .portal-status {
+  font-size: 10px; margin-top: 2px;
+  color: var(--c-text3);
+}
+.portal-item .portal-status.open { color: var(--c-green2); }
+.portal-item .portal-status.cooldown { color: var(--c-amber); }
+.portal-item .portal-cost { font-size: 10px; color: var(--c-gold); }
+.portal-item .portal-glow {
+  position: absolute; right: 8px; top: 50%;
+  transform: translateY(-50%);
+  font-size: 20px;
+  opacity: 0.6;
+}
+
+/* Facilities grid */
+.facilities-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.facility-card {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 10px;
+  transition: all 0.15s;
+}
+.facility-card:hover { border-color: var(--c-border2); }
+.facility-card.active { border-color: var(--c-green); }
+.facility-card.building { border-color: var(--c-gold); animation: pulse-border 1.5s infinite; }
+.facility-card.locked { opacity: 0.5; }
+
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--c-gold); box-shadow: 0 0 4px var(--c-glow); }
+  50% { border-color: var(--c-amber); box-shadow: 0 0 12px var(--c-glow2); }
+}
+
+.facility-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.facility-icon { font-size: 22px; }
+.facility-name { font-size: 12px; color: var(--c-text); }
+.facility-level { font-size: 10px; color: var(--c-text3); }
+.facility-desc { font-size: 10px; color: var(--c-text2); margin-bottom: 6px; }
+.facility-output { font-size: 10px; color: var(--c-green2); margin-bottom: 4px; }
+.facility-progress {
+  height: 4px; background: var(--c-bg2); border-radius: 2px;
+  overflow: hidden; margin-bottom: 6px;
+}
+.facility-progress-fill { height: 100%; background: var(--c-gold); transition: width 0.5s; }
+.facility-upgrade-btn { width: 100%; font-size: 10px; padding: 4px; }
+
+/* Power display */
+.power-bar {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 8px;
+}
+.power-bar-title { font-size: 10px; color: var(--c-text3); margin-bottom: 4px; }
+.power-bar-track {
+  height: 8px; background: var(--c-bg2);
+  border-radius: 4px; overflow: hidden;
+}
+.power-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4060c0 0%, #60c0f0 100%);
+  transition: width 0.4s;
+}
+.power-bar-labels {
+  display: flex; justify-content: space-between;
+  font-size: 9px; color: var(--c-text3); margin-top: 2px;
+}

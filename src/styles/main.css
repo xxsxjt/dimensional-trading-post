@@ -1,0 +1,250 @@
+/* ===== RESET & BASE ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg:        #0f0e0d;
+  --c-bg2:       #1a1714;
+  --c-bg3:       #241f1a;
+  --c-panel:     #1e1a16;
+  --c-border:    #3d3428;
+  --c-border2:   #5a4a32;
+  --c-gold:      #c8952a;
+  --c-gold2:     #f0c060;
+  --c-amber:     #d4822a;
+  --c-rust:      #8b4513;
+  --c-green:     #4a8b3a;
+  --c-green2:    #72c44e;
+  --c-red:       #8b2a2a;
+  --c-red2:      #e04040;
+  --c-blue:      #2a4a8b;
+  --c-blue2:     #5090e0;
+  --c-purple:    #5a2a8b;
+  --c-purple2:   #a060e0;
+  --c-text:      #d4c8a8;
+  --c-text2:     #a09070;
+  --c-text3:     #6a5a40;
+  --c-glow:      rgba(200,149,42,0.15);
+  --c-glow2:     rgba(200,149,42,0.4);
+  --font-main:   'Courier New', 'SimHei', monospace;
+  --shadow-panel: 0 4px 20px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,200,80,0.1);
+  --r:           4px;
+}
+
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--c-bg); }
+
+body {
+  font-family: var(--font-main);
+  color: var(--c-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ===== SCROLLBAR ===== */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--c-bg2); }
+::-webkit-scrollbar-thumb { background: var(--c-border2); border-radius: 3px; }
+
+/* ===== APP LAYOUT ===== */
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ===== TOPBAR ===== */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  background: linear-gradient(180deg, #1a1410 0%, #0f0e0d 100%);
+  border-bottom: 2px solid var(--c-border2);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.8);
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+#shop-name {
+  font-size: 16px;
+  font-weight: bold;
+  color: var(--c-gold2);
+  text-shadow: 0 0 12px var(--c-gold);
+  white-space: nowrap;
+  letter-spacing: 2px;
+  min-width: 160px;
+}
+
+#tab-nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.tab-btn {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  color: var(--c-text2);
+  padding: 5px 16px;
+  border-radius: var(--r);
+  cursor: pointer;
+  font-family: var(--font-main);
+  font-size: 12px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.tab-btn:hover { border-color: var(--c-border2); color: var(--c-text); background: var(--c-bg2); }
+.tab-btn.active {
+  background: var(--c-bg2);
+  border-color: var(--c-gold);
+  color: var(--c-gold2);
+  box-shadow: 0 0 8px var(--c-glow);
+}
+
+#hud {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+#hud span { color: var(--c-text); }
+#hud #hud-gold { color: var(--c-gold2); }
+#gold-val, #day-val, #rep-val { font-weight: bold; }
+
+/* ===== TAB PANELS ===== */
+#tab-panels { flex: 1; overflow: hidden; position: relative; }
+.tab-panel { display: none; width: 100%; height: 100%; overflow: hidden; }
+.tab-panel.active { display: flex; flex-direction: column; }
+
+/* ===== OVERLAY ===== */
+#overlay-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  z-index: 200; backdrop-filter: blur(2px);
+}
+.hidden { display: none !important; }
+
+/* ===== ITEM DETAIL PANEL ===== */
+#item-detail-panel {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 320px;
+  background: var(--c-panel);
+  border: 2px solid var(--c-border2);
+  border-radius: var(--r);
+  padding: 16px;
+  z-index: 300;
+  box-shadow: var(--shadow-panel);
+}
+
+/* ===== TOOLTIP ===== */
+#tooltip {
+  position: fixed;
+  background: rgba(20,16,10,0.97);
+  border: 1px solid var(--c-border2);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--c-text);
+  z-index: 9999;
+  pointer-events: none;
+  max-width: 280px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.8);
+}
+
+/* ===== NIGHT REPORT MODAL ===== */
+#night-report-modal {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 480px;
+  max-height: 70vh;
+  background: var(--c-panel);
+  border: 2px solid var(--c-gold);
+  border-radius: var(--r);
+  padding: 24px;
+  z-index: 300;
+  overflow-y: auto;
+  box-shadow: 0 0 40px var(--c-glow2);
+}
+#night-report-modal h2 {
+  color: var(--c-gold2);
+  font-size: 18px;
+  text-align: center;
+  margin-bottom: 16px;
+  text-shadow: 0 0 12px var(--c-gold);
+}
+
+/* ===== GENERIC UI COMPONENTS ===== */
+.panel-box {
+  background: var(--c-panel);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-panel);
+}
+
+.section-title {
+  font-size: 11px;
+  color: var(--c-text3);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--c-border);
+  margin-bottom: 8px;
+}
+
+.btn {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border2);
+  color: var(--c-text);
+  padding: 5px 14px;
+  border-radius: var(--r);
+  cursor: pointer;
+  font-family: var(--font-main);
+  font-size: 12px;
+  transition: all 0.12s;
+}
+.btn:hover { background: var(--c-bg2); border-color: var(--c-gold); color: var(--c-gold2); }
+.btn.primary {
+  background: linear-gradient(180deg, #7a5a20 0%, #5a3f12 100%);
+  border-color: var(--c-gold);
+  color: var(--c-gold2);
+}
+.btn.primary:hover { background: linear-gradient(180deg, #9a7a30 0%, #7a5a20 100%); }
+.btn.danger { border-color: var(--c-red2); color: var(--c-red2); }
+.btn.danger:hover { background: var(--c-red); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-size: 11px;
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+}
+.badge.quality-1 { color: #999; border-color: #555; }
+.badge.quality-2 { color: #80b040; border-color: #4a8028; }
+.badge.quality-3 { color: #5090e0; border-color: #306090; }
+.badge.quality-4 { color: #c060e0; border-color: #803090; }
+.badge.quality-5 { color: var(--c-gold2); border-color: var(--c-gold); }
+
+/* ===== PRICE INDICATORS ===== */
+.price-up   { color: var(--c-green2); }
+.price-down { color: var(--c-red2); }
+.price-same { color: var(--c-text2); }
+
+/* ===== WORLD COLOR CHIPS ===== */
+.world-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: bold;
+  border: 1px solid;
+}
+.world-nuclear    { background: rgba(80,50,0,0.4); color: #f0a020; border-color: #805010; }
+.world-plague     { background: rgba(40,60,20,0.4); color: #80c040; border-color: #406020; }
+.world-ai         { background: rgba(0,40,80,0.4); color: #40c0f0; border-color: #206080; }
+.world-xianxia    { background: rgba(80,20,80,0.4); color: #e080e0; border-color: #803080; }
+.world-mortal     { background: rgba(80,60,20,0.4); color: #d0a040; border-color: #806020; }
+.world-steam      { background: rgba(80,40,0,0.4); color: #e08030; border-color: #804010; }
+.world-cybermage  { background: rgba(0,20,80,0.4); color: #4060e0; border-color: #203080; }
+.world-medieval   { background: rgba(40,30,10,0.4); color: #b09040; border-color: #806030; }
+.world-stellar    { background: rgba(0,10,40,0.4); color: #8090d0; border-color: #406080; }
+.world-ancient    { background: rgba(60,40,10,0.4); color: #c08830; border-color: #705020; }

@@ -1,0 +1,377 @@
+/* ===== COUNTER TAB LAYOUT ===== */
+#tab-counter {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Main area: shop scene + side panels */
+.counter-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  padding: 6px;
+  overflow: hidden;
+}
+
+/* ===== SHOWCASE (left panel) ===== */
+.showcase-panel {
+  width: 140px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.showcase-panel .section-title { text-align: center; }
+
+.showcase-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.showcase-slot {
+  flex: 1;
+  min-height: 60px;
+  background: linear-gradient(135deg, rgba(30,25,18,0.9) 0%, rgba(20,16,10,0.9) 100%);
+  border: 1px solid var(--c-border2);
+  border-radius: var(--r);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.showcase-slot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(200,150,40,0.05) 0%, transparent 60%);
+}
+.showcase-slot:hover { border-color: var(--c-gold); box-shadow: 0 0 10px var(--c-glow); }
+.showcase-slot.filled { border-color: var(--c-gold); }
+.showcase-slot .slot-empty-hint { color: var(--c-text3); font-size: 10px; text-align: center; }
+.showcase-slot .slot-item-icon {
+  font-size: 28px;
+  filter: drop-shadow(0 0 6px rgba(200,150,40,0.5));
+}
+.showcase-slot .slot-item-name {
+  position: absolute;
+  bottom: 3px; left: 0; right: 0;
+  text-align: center;
+  font-size: 9px;
+  color: var(--c-text2);
+  background: rgba(0,0,0,0.5);
+  padding: 1px;
+}
+.showcase-slot .slot-remove-btn {
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 14px; height: 14px;
+  background: rgba(100,0,0,0.8);
+  border: none; border-radius: 2px;
+  color: #f00; font-size: 10px;
+  cursor: pointer; display: none;
+  line-height: 14px; text-align: center;
+}
+.showcase-slot:hover .slot-remove-btn { display: block; }
+
+.showcase-info {
+  background: rgba(200,150,40,0.05);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 6px 8px;
+  font-size: 10px;
+  color: var(--c-text2);
+}
+.showcase-info .info-label { color: var(--c-text3); margin-bottom: 3px; }
+.showcase-info .expected-visitors { color: var(--c-gold2); }
+
+/* ===== SHOP SCENE (middle) ===== */
+.shop-scene {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+
+.shop-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 30% 50%, rgba(60,30,0,0.3) 0%, transparent 60%),
+    radial-gradient(ellipse at 70% 30%, rgba(0,40,80,0.2) 0%, transparent 50%),
+    linear-gradient(180deg, #0a0d12 0%, #12100a 40%, #0e0c08 100%);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+/* SVG shop background elements */
+.shop-bg svg {
+  width: 100%; height: 100%;
+  opacity: 0.6;
+}
+
+/* Counter wrapper above bg */
+.counter-area-wrapper {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Customer area (top half of counter) */
+.customer-zone {
+  flex: 1;
+  min-height: 120px;
+  background: rgba(8,12,18,0.85);
+  border: 1px solid var(--c-border);
+  border-bottom: 2px solid var(--c-border2);
+  border-radius: var(--r) var(--r) 0 0;
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  gap: 16px;
+  margin: 6px 6px 0;
+  position: relative;
+  overflow: hidden;
+}
+.customer-zone::before {
+  content: '— 客人展示区 —';
+  position: absolute;
+  top: 4px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; color: var(--c-text3); letter-spacing: 3px;
+}
+
+/* No customer state */
+.no-customer-hint {
+  width: 100%; text-align: center;
+  color: var(--c-text3); font-size: 12px;
+  padding-top: 8px;
+}
+.no-customer-hint .next-btn-area { margin-top: 10px; }
+
+/* Customer portrait & info */
+.customer-portrait {
+  width: 72px; height: 72px;
+  border: 2px solid var(--c-border2);
+  border-radius: 4px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--c-bg3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 36px;
+}
+.customer-portrait .world-indicator {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  font-size: 8px; text-align: center;
+  background: rgba(0,0,0,0.7); padding: 1px;
+}
+
+.customer-info {
+  flex: 1; min-width: 0;
+}
+.customer-name { font-size: 13px; color: var(--c-gold2); margin-bottom: 3px; }
+.customer-desc { font-size: 11px; color: var(--c-text2); margin-bottom: 6px; }
+.customer-mood { font-size: 11px; }
+.customer-budget { font-size: 11px; color: var(--c-gold); margin-top: 3px; }
+
+/* Customer's items on counter */
+.customer-items {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.counter-item-card {
+  width: 56px; height: 72px;
+  background: rgba(30,25,18,0.9);
+  border: 1px solid var(--c-border);
+  border-radius: 3px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 3px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  position: relative;
+}
+.counter-item-card:hover { border-color: var(--c-gold); }
+.counter-item-card .item-icon { font-size: 24px; }
+.counter-item-card .item-name { font-size: 8px; color: var(--c-text2); text-align: center; margin-top: 2px; overflow: hidden; max-width: 100%; }
+.counter-item-card .item-price { font-size: 9px; color: var(--c-gold); margin-top: 1px; }
+
+/* Trade buttons */
+.trade-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 80px;
+}
+.trade-btn {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+/* Player trade area (bottom half) */
+.player-zone {
+  min-height: 90px;
+  background: rgba(20,16,10,0.9);
+  border: 1px solid var(--c-border2);
+  border-top: none;
+  border-radius: 0 0 var(--r) var(--r);
+  padding: 8px 12px;
+  margin: 0 6px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  overflow: hidden;
+}
+.player-zone::before {
+  content: '— 玩家摆出区 —';
+  position: absolute;
+  top: 4px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; color: var(--c-text3); letter-spacing: 3px;
+}
+.player-zone-items { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; align-items: center; padding-top: 10px; }
+.player-zone-price { min-width: 100px; }
+.player-price-input {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.player-price-input label { font-size: 10px; color: var(--c-text3); }
+.player-price-input input {
+  background: var(--c-bg2);
+  border: 1px solid var(--c-border2);
+  border-radius: var(--r);
+  color: var(--c-gold2);
+  font-family: var(--font-main);
+  font-size: 13px;
+  width: 90px; padding: 3px 6px;
+  text-align: right;
+}
+.player-price-input input:focus { outline: none; border-color: var(--c-gold); }
+
+/* Dialogue box */
+.dialogue-box {
+  margin: 0 6px;
+  padding: 8px 12px;
+  background: rgba(12,10,6,0.9);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  font-size: 12px;
+  color: var(--c-text);
+  min-height: 36px;
+  position: relative;
+  flex-shrink: 0;
+}
+.dialogue-box::before {
+  content: '▷';
+  position: absolute;
+  left: 4px; top: 8px;
+  color: var(--c-gold); font-size: 10px;
+}
+.dialogue-text { padding-left: 12px; }
+
+/* ===== RIGHT PANEL: event log ===== */
+.event-log-panel {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.event-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.event-entry {
+  font-size: 10px;
+  padding: 4px 6px;
+  background: var(--c-bg3);
+  border-left: 2px solid var(--c-border);
+  border-radius: 0 var(--r) var(--r) 0;
+  color: var(--c-text2);
+}
+.event-entry.type-sale    { border-color: var(--c-green2); }
+.event-entry.type-buy     { border-color: var(--c-blue2); }
+.event-entry.type-market  { border-color: var(--c-gold); }
+.event-entry.type-warning { border-color: var(--c-red2); }
+
+.day-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.end-day-btn {
+  width: 100%;
+  padding: 8px;
+  font-size: 12px;
+  text-align: center;
+  background: linear-gradient(180deg, #4a3010 0%, #2a1a08 100%);
+  border: 1px solid var(--c-gold);
+  color: var(--c-gold2);
+}
+.end-day-btn:hover {
+  background: linear-gradient(180deg, #6a4820 0%, #4a2810 100%);
+  box-shadow: 0 0 12px var(--c-glow);
+}
+
+/* ===== WAREHOUSE (below counter main) ===== */
+.warehouse-section {
+  flex-shrink: 0;
+  border-top: 2px solid var(--c-border2);
+  background: var(--c-bg2);
+  padding: 6px;
+}
+.warehouse-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.warehouse-header .section-title { margin: 0; border: none; padding: 0; flex: 1; }
+.warehouse-header .wh-stats { font-size: 10px; color: var(--c-text3); }
+.warehouse-toggle-btn { font-size: 10px; padding: 2px 8px; }
+.warehouse-body { overflow: hidden; transition: max-height 0.3s; }
+.warehouse-body.collapsed { max-height: 0; }
+.warehouse-body.expanded { max-height: 400px; overflow-y: auto; }
+
+/* ===== PRICE CHECK PANEL ===== */
+.price-check-panel {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 8px;
+  font-size: 11px;
+}
+.price-check-panel table { width: 100%; border-collapse: collapse; }
+.price-check-panel td { padding: 2px 4px; }
+.price-check-panel .price-col { text-align: right; }
+
+/* Market ticker */
+.market-ticker {
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r);
+  padding: 5px 8px;
+  font-size: 10px;
+  color: var(--c-text2);
+  overflow: hidden;
+}
+.market-ticker-inner { display: flex; gap: 24px; }
+.ticker-item .ticker-name { color: var(--c-text3); }
+.ticker-item .ticker-price { color: var(--c-gold2); }
