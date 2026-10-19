@@ -1,20 +1,66 @@
-# 时空交易行 · Dimensional Trading Post
+# 界门交易行 · Dimensional Trading Post
 
-A dimensional trading shop game where you trade goods across parallel worlds.
+在平行世界之间经营一间交易行的网页游戏。每天开门前选一个世界，界门开在那里的一处随机地点；
+接待当天来的商旅，收他们的货、卖他们想要的货，把原料加工成更值钱的东西。
 
-## Worlds
-- Nuclear Wasteland, Plague Wasteland, AI Apocalypse
-- Xianxia Sect World, Mortal Market
-- Steampunk Empire, Cybermage City, Medieval Kingdom
-- Stellar Outpost, Ancient Empire Bazaar
+原生 JavaScript + CSS，无框架、无构建依赖。
 
-## Tech Stack
-- Vanilla JS + CSS, no framework
-- Vite for dev/build
-- Single HTML entry point
+## 玩法
 
-## Development
+**两个世界已开放**，各有独立的商旅、机器与生产链：
+
+- **核爆废土** —— 熔炉熔金属、装配台拼电子件、化工台调配药剂
+- **灵霄宗门界** —— 丹炉炼丹、符箓台画阵、灵田种药草
+
+其余九个世界标注「开发中」，在界门面板里能看到场景，但还不能开门营业。
+
+**核心循环**
+
+1. 每天选一个世界，在随机地点开门
+2. 接待商旅：收他们带来的货，卖他们想要的东西
+3. 把原料投进机器，几天后产出成品——成品比原料值钱，但配方有失败率，炼废了只剩副产物
+4. 派遣队伍去外面搜刮，近郊便宜、禁区贵但回报高
+5. 结束一天：结算租金、失窃、在途货物与生产进度
+
+**生产规则**（由测试钉死）
+
+| 规则 | 说明 |
+|---|---|
+| 成品比原料值钱 | 每道配方成品 ≥ 原料的 1.5 倍，实测 1.8–3.1 倍 |
+| 炼废是真亏 | 副产物价值低于原料，但不为零 |
+| 没电不干活 | 机器断电时批次原地等待，不推进天数、不再吃料 |
+
+## 内容规模
+
+- **228 个物品**，11 个品类，全部有获取渠道（访客带货、派遣战利品、生产产出、人脉订购）
+- **20 道配方**，6 台机器
+- **9 个商旅角色**，按世界划分
+- **258 张美术资源**：228 物品图标、6 机器、4 设施、9 立绘、10 世界场景、1 UI 部件
+
+## 开发
+
 ```sh
-npm install
-npm run dev
+npm install       # 只有 vite，用于 dev server
+npm run dev       # 启动开发服务器
+npm test          # 跑测试
+npm run build     # 构建到 dist/
 ```
+
+美术管线：
+
+```sh
+npm run art:manifest   # 从物品目录生成待画清单
+npm run art:generate   # 批量出图（需要 AIGCPro 密钥）
+npm run art:index      # 重建 assets/art-index.js
+```
+
+缺图时界面自动退回 emoji，半套美术也能正常游玩。
+
+## 技术说明
+
+- `src/wasteland-core.js` —— 物品目录、配方、网格、存档
+- `src/wasteland-npc.js` —— 世界表、商旅生成、议价
+- `src/wasteland-ui.js` —— 全部渲染函数
+- `src/wasteland-shop.js` —— 主循环：开店、交易、生产、派遣、结算
+
+存档键 `xxsxWastelandShopV1`，与旧版兼容。

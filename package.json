@@ -1,0 +1,19 @@
+{
+  "name": "dimensional-trading-post",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "界门交易行 · 跨平行世界经营交易的游戏",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node tests/wasteland-shop.cjs",
+    "art:manifest": "node tools/art/manifest.mjs",
+    "art:generate": "node tools/art/generate.mjs",
+    "art:index": "node tools/art/index.mjs",
+    "art": "node tools/art/manifest.mjs && node tools/art/generate.mjs && node tools/art/index.mjs && node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "vite": "8.0.13"
+  }
+}
