@@ -8,3 +8,6 @@ tools/art/.raw/
 .claude/wf/
 
 *.tmp
+
+# 工作树目录，不属于仓库内容
+game/
