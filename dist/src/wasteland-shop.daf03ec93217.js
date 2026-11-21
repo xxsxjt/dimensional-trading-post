@@ -195,6 +195,73 @@
         from:      npcName || '商旅'
       });
     }
+
+    // 开局兜底：至少留一件玩家现在买得起的货。
+    // VISITOR_MAX_BASE 卡的是 basePrice，不是最终报价 —— 报价还要乘
+    // 品质倍率（最高 2.0）、纯度倍率（最高 2.5）和行情系数（可达 5），
+    // 所以一件 basePrice 320 的货完全可能开价 450+。
+    // 而开局只有 ¤200，于是会出现「今天所有商旅的货一件都买不起」，
+    // 玩家既不能进货、仓库也是空的，直接被判经营失败。
+    //
+    // 不能直接把某一件的报价压到余额以内：报价有下限（不得低于市价 80%，
+    // 否则就是白捡，测试守着这条）。所以正确的做法是换货 ——
+    // 从池子里挑一件「按市价算下来就买得起」的货替换掉最贵的那件，
+    // 这样 ask <= 预算 且 ask >= 市价 80% 两条约束同时成立。
+    if (offers.length && state) {
+      var budget = state.gold;
+      var affordable = offers.filter(function (o) { return o.unitCost <= budget; });
+      if (!affordable.length) {
+        // 按角色自身的报价区间上界来筛：ask = listPrice * factor，
+        // factor 取值范围是 conf.sellFactor（最大见过 1.12）。
+        // 只有 listPrice <= budget / factorMax，按最贵的情形算也才买得起。
+        var factorMax = factor[1] > factor[0] ? factor[1] : factor[0];
+        var maxList = Math.floor(budget / factorMax);
+        var pick = null;
+        for (var catIdx = 0; catIdx < cats.length && !pick; catIdx++) {
+          var pool = _visitorPool(cats[catIdx], maxBase, exclude);
+          for (var k = 0; k < pool.length; k++) {
+            var candId = pool[k];
+            if (used[candId]) continue;
+            var candProbe;
+            try {
+              // 品质 2 / 真品：同款里最便宜的一种都买不起就彻底没戏
+              candProbe = Core.createItem(candId, { quality: 2, genuine: true, origin: 'trade' });
+            } catch (e) { continue; }
+            var candList = Core.computePrice(market, candProbe);
+            if (!(candList > 0) || candList > maxList) continue;
+            pick = { skuId: candId, sku: catalog[candId], listPrice: candList };
+            break;
+          }
+        }
+        if (pick) {
+          // 用 ceil 而不是 round：round 可能把 ask 压到市价 80% 以下
+          // （listPrice=5、factor=0.86 时 round 得 4，比例正好 0.8，
+          //  再小一点就跌破下限变成白捡）。向上取整保证比例 >= factor[0] >= 0.86。
+          var newAsk = Math.max(1, Math.ceil(pick.listPrice * factor[0]));
+          if (newAsk > budget) newAsk = budget;
+          // 替换掉最贵的那一件，其余报价保持不变
+          var dearestIdx = 0;
+          for (var oi = 1; oi < offers.length; oi++) {
+            if (offers[oi].unitCost > offers[dearestIdx].unitCost) dearestIdx = oi;
+          }
+          offers[dearestIdx] = {
+            id:        'off_' + pick.skuId + '_' + Math.floor(Math.random() * 99999),
+            skuId:     pick.skuId,
+            name:      pick.sku.name,
+            category:  pick.sku.category,
+            icon:      pick.sku.icon || '📦',
+            w:         pick.sku.w,
+            h:         pick.sku.h,
+            qty:       1,
+            quality:   2,
+            genuine:   true,
+            listPrice: pick.listPrice,
+            unitCost:  newAsk,
+            from:      npcName || '商旅'
+          };
+        }
+      }
+    }
     return offers;
   }
 

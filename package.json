@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node tests/wasteland-shop.cjs",
+    "test": "node tests/wasteland-shop.cjs && node tests/soak.cjs",
+    "test:unit": "node tests/wasteland-shop.cjs",
+    "test:soak": "node tests/soak.cjs",
     "art:manifest": "node tools/art/manifest.mjs",
     "art:generate": "node tools/art/generate.mjs",
     "art:index": "node tools/art/index.mjs",

@@ -7,7 +7,7 @@
 //  - 目录字段统计只扫 ITEM_CATALOG 的条目，不扫整个 core.js
 //    （整个文件里的 type:'market' 是事件对象，不是目录字段）。
 //  - 「只写不读」的判定剔除「对该字段自身赋值」的整行。
-import {readFileSync} from 'node:fs';
+import {readFileSync, existsSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
@@ -206,6 +206,31 @@ ok('工具 以退出码 0 结束（无 error）', run.status === 0, 'status=' + 
 /* 6. 通过维度数 */
 const reportedPass = report.match(/\| 通过（无告警） \| ([^|]+) \|/);
 ok('报告列出 18 个通过维度', reportedPass && reportedPass[1].split('、').length === 18, reportedPass ? 'n=' + reportedPass[1].split('、').length : 'n/a');
+
+/* 6b. 报告里的测试项数必须与真实跑出来的 PASS 条数一致
+ * 报告写「22 项全绿」而实际只有 20 项 —— 这种漂移以前出现过，
+ * 所以这里直接跑一遍测试，把真实的 PASS 条数数出来跟报告对齐。 */
+const testRun = spawnSync(process.execPath, [resolve(root, 'tests/wasteland-shop.cjs')],
+  {cwd: root, encoding: 'utf8'});
+const soakRun = spawnSync(process.execPath, [resolve(root, 'tests/soak.cjs')],
+  {cwd: root, encoding: 'utf8'});
+const testOut = (testRun.stdout || '') + (testRun.stderr || '') + (soakRun.stdout || '') + (soakRun.stderr || '');
+const passCount = (testOut.match(/^PASS/gm) || []).length;
+const failCount = (testOut.match(/^FAIL/gm) || []).length;
+const claimedTotal = report.match(/npm test`?\s*\*\*(\d+)\s*项全绿/);
+ok('测试全部通过（无 FAIL）', failCount === 0 && testRun.status === 0 && soakRun.status === 0,
+  'fail=' + failCount + ' unit=' + testRun.status + ' soak=' + soakRun.status);
+ok('报告声明的测试项数与真实 PASS 条数一致', claimedTotal && Number(claimedTotal[1]) === passCount,
+  '报告=' + (claimedTotal ? claimedTotal[1] : 'n/a') + ' 实际=' + passCount);
+ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
+
+/* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
+ * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——
+ * 用 checks.length + 1（+1 就是本条自己），否则永远差一。 */
+const claimedVerify = report.match(/audit:verify`?\s*\*\*(\d+)\s*项全绿/);
+ok('报告声明的 audit:verify 项数与本脚本检查项数一致',
+  claimedVerify && Number(claimedVerify[1]) === checks.length + 1,
+  '报告=' + (claimedVerify ? claimedVerify[1] : 'n/a') + ' 实际=' + (checks.length + 1));
 
 let failed = 0;
 checks.forEach(c => {
