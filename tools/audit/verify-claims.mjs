@@ -209,20 +209,32 @@ ok('报告列出 18 个通过维度', reportedPass && reportedPass[1].split('、
 
 /* 6b. 报告里的测试项数必须与真实跑出来的 PASS 条数一致
  * 报告写「22 项全绿」而实际只有 20 项 —— 这种漂移以前出现过，
- * 所以这里直接跑一遍测试，把真实的 PASS 条数数出来跟报告对齐。 */
-const testRun = spawnSync(process.execPath, [resolve(root, 'tests/wasteland-shop.cjs')],
-  {cwd: root, encoding: 'utf8'});
-const soakRun = spawnSync(process.execPath, [resolve(root, 'tests/soak.cjs')],
-  {cwd: root, encoding: 'utf8'});
-const testOut = (testRun.stdout || '') + (testRun.stderr || '') + (soakRun.stdout || '') + (soakRun.stderr || '');
+ * 所以这里直接跑一遍测试，把真实的 PASS 条数数出来跟报告对齐。
+ *
+ * 要跑齐 npm test 的全部三个套件（unit / soak / build）——
+ * 少跑一个，报告就能报出一个「看起来对」的假数字：
+ * 之前只跑 unit+soak（23 项），而 npm test 实际跑 24 项，
+ * 报告写 23 反而通过了校验。现在三个都跑，数字必须严丝合缝。 */
+const TEST_SUITES = [
+  ['unit', 'tests/wasteland-shop.cjs'],
+  ['soak', 'tests/soak.cjs'],
+  ['build', 'tests/build-retention.cjs'],
+];
+const suiteRuns = TEST_SUITES.map(([name, rel]) => {
+  const r = spawnSync(process.execPath, [resolve(root, rel)], {cwd: root, encoding: 'utf8'});
+  return {name, rel, status: r.status, out: (r.stdout || '') + (r.stderr || '')};
+});
+const testOut = suiteRuns.map(s => s.out).join('\n');
 const passCount = (testOut.match(/^PASS/gm) || []).length;
 const failCount = (testOut.match(/^FAIL/gm) || []).length;
 const claimedTotal = report.match(/npm test`?\s*\*\*(\d+)\s*项全绿/);
-ok('测试全部通过（无 FAIL）', failCount === 0 && testRun.status === 0 && soakRun.status === 0,
-  'fail=' + failCount + ' unit=' + testRun.status + ' soak=' + soakRun.status);
+const suiteStatus = suiteRuns.map(s => s.name + '=' + s.status).join(' ');
+ok('测试全部通过（无 FAIL）', failCount === 0 && suiteRuns.every(s => s.status === 0),
+  'fail=' + failCount + ' ' + suiteStatus);
 ok('报告声明的测试项数与真实 PASS 条数一致', claimedTotal && Number(claimedTotal[1]) === passCount,
   '报告=' + (claimedTotal ? claimedTotal[1] : 'n/a') + ' 实际=' + passCount);
 ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
+ok('构建保留回归文件存在', existsSync(resolve(root, 'tests/build-retention.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

@@ -19,23 +19,60 @@ import {gzipSync} from 'node:zlib';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = 'V1';
 
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+
+function walk(dir) {
+  if (!existsSync(resolve(root, dir))) return [];
+  return readdirSync(resolve(root, dir), {withFileTypes: true})
+    .flatMap(e => e.isDirectory() ? walk(`${dir}/${e.name}`) : [`${dir}/${e.name}`]);
+}
+
 // ── 保留上一版已发布的哈希文件 ─────────────────────────────────
 // 旧链接在 CDN 上可能还有人访问，重建时不能凭空让它们 404。
+//
+// 这里要收集三类：
+//   1. previous.retained / previous.previousFiles —— 更早版本留下的
+//   2. previous.files 里带哈希的产物 —— 上一版构建刚生成的
+//   3. 磁盘上存在、但清单没记的同目录哈希产物 —— 历史遗留的孤儿
+//
+// 原实现只在 version 变化时才会去看 previous.files，同版本重建时
+// retained/previousFiles 都是空的，保留逻辑等于没生效：旧哈希文件
+// 只是因为「build 从不删东西」而侥幸留在磁盘上，清单里没有任何记录，
+// 于是 dist/ 无限膨胀，git 也把它们当成来路不明的孤儿文件。
 const retained = {};
 try {
   const previous = JSON.parse(readFileSync(resolve(root, 'dist/release-manifest.json'), 'utf8'));
-  const items = previous.version === VERSION
-    ? Object.values(previous.previousFiles || previous.retained || {})
-    : Object.values(previous.files || {}).filter(i => /\.[0-9a-f]{12}\./.test(i.path))
-        .concat(Object.values(previous.previousFiles || previous.retained || {}));
-  for (const item of items) {
-    const file = resolve(root, 'dist', item.path);
-    if (existsSync(file)) retained[item.path] = {bytes: readFileSync(file), sha256: item.sha256};
+  const candidates = new Map();
+
+  const add = (item) => {
+    if (!item || !item.path || !item.sha256) return;
+    // 只保留带内容哈希的产物；页面（wasteland.html）没有哈希，不进保留列表
+    if (!/\.[0-9a-f]{12}\./.test(item.path)) return;
+    candidates.set(item.path, item);
+  };
+  Object.values(previous.retained || {}).forEach(add);
+  Object.values(previous.previousFiles || {}).forEach(add);
+  Object.values(previous.files || {}).forEach(add);
+
+  // 扫 dist/ 下的哈希产物，把清单没记但磁盘还在的补进来
+  for (const dir of walk('dist')) {
+    if (!/\.[0-9a-f]{12}\./.test(dir)) continue;
+    if (candidates.has(dir)) continue;
+    const abs = resolve(root, dir);
+    const bytes = readFileSync(abs);
+    candidates.set(dir, {path: dir, sha256: sha(bytes), bytes: bytes.length});
+  }
+
+  for (const [path, item] of candidates) {
+    const file = resolve(root, 'dist', path);
+    if (!existsSync(file)) continue;          // 磁盘上已经没了就别留
+    const bytes = readFileSync(file);
+    if (sha(bytes) !== item.sha256) continue;  // 哈希对不上就不要留脏数据
+    retained[path] = {bytes, sha256: item.sha256};
   }
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 
 const files = {}, aliases = {};
-const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function put(source, bytes, folder) {
   const ext = extname(source);
@@ -50,12 +87,6 @@ function put(source, bytes, folder) {
     bytes: bytes.length,
     gzipBytes: gzipSync(bytes).length,
   };
-}
-
-function walk(dir) {
-  if (!existsSync(resolve(root, dir))) return [];
-  return readdirSync(resolve(root, dir), {withFileTypes: true})
-    .flatMap(e => e.isDirectory() ? walk(`${dir}/${e.name}`) : [`${dir}/${e.name}`]);
 }
 
 // url() 与路径字符串要跟着哈希后的文件名走，否则索引指向一堆 404
@@ -105,12 +136,14 @@ for (const page of PAGES) {
 // ── 上一版保留文件 ─────────────────────────────────────────────
 const retainedManifest = {}, previousFiles = {};
 for (const [path, item] of Object.entries(retained)) {
-  previousFiles[path] = {path, sha256: item.sha256, bytes: item.bytes.length};
+  // 本次构建刚产出的文件不算「上一版」，要跳过 ——
+  // 否则 previousFiles 会把当前全部产物都记一遍（268 项），名不副实。
   if (Object.values(files).some(f => f.path === path)) continue;
   if (sha(item.bytes) !== item.sha256) throw new Error('Corrupt retained resource: ' + path);
   mkdirSync(resolve(root, 'dist', dirname(path)), {recursive: true});
   writeFileSync(resolve(root, 'dist', path), item.bytes);
   retainedManifest[path] = {path, sha256: item.sha256, bytes: item.bytes.length};
+  previousFiles[path] = {path, sha256: item.sha256, bytes: item.bytes.length};
 }
 
 writeFileSync(resolve(root, 'dist/release-manifest.json'),

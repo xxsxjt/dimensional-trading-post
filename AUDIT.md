@@ -18,7 +18,7 @@
 | WARN | 0 |
 | 通过（无告警） | 目录完整性、配方链、世界覆盖、渠道覆盖、派遣档位、NPC 标签系统、NPC 判定键对齐、死代码、过期机制、纯度系统、DOM id 契约、构建一致性、美术索引、文档数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面 |
 
-  自动化测试 `npm test` **23 项全绿**（单元 17 项 + 多日推演 6 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **86 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **24 项全绿**（单元 17 项 + 多日推演 6 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **87 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -162,14 +162,63 @@ npc.js 的迁移说明注释里写着 `item.type === '酒'` 这种历史写法�
 
 ---
 
+## 四之三、构建脚本自己骗了自己：保留策略从未生效
+
+`scripts/build.mjs` 的注释里写着一句承诺：
+
+> 旧链接在 CDN 上可能还有人访问，重建时不能凭空让它们 404。
+
+所以它有一段「保留上一版已发布的哈希文件」的逻辑。但这段逻辑**从来没生效过**。
+
+- **原来的分支写错了**：
+
+  ```javascript
+  previous.version === VERSION
+    ? Object.values(previous.previousFiles || previous.retained || {})
+    : Object.values(previous.files || {}).filter(...)   // ← 这一支是死代码
+  ```
+
+  `previous.files`（唯一装着 267 个哈希产物的地方）**只在版本号变化时才会被读到**。
+  而日常重建版本号不变，走的是上面那支 —— `previousFiles` 和 `retained`
+  在全新 checkout 里都是**空的**，于是 `items = []`，保留了个寂寞。
+
+- **为什么以前没炸**：旧哈希文件只是因为「build 从不删东西」而**侥幸**留在磁盘上。
+  承诺歪打正着守住了，但清单里**没有任何记录**：
+  `retained` 恒为 0，`previousFiles` 恒为 0。
+  后果是 `dist/` 无限膨胀，git 把这些产物当成来路不明的孤儿文件，
+  每次构建前后都得手工清一遍。
+
+- **顺带发现的一个更隐蔽的问题**：即使保留逻辑生效了，`previousFiles` 也是先赋值
+  后判断「是否本次产物」，于是它会把**当前全部 268 项**都记一遍 —— 名不副实。
+
+- **修法**：
+  - 保留集合改为三个来源合并：`previous.retained` + `previous.previousFiles`
+    + `previous.files` 里带哈希的产物；
+  - 再扫一遍 `dist/` 目录，把「磁盘上有、清单没记」的历史孤儿补进来；
+  - 落盘前校验内容哈希，对不上就不留脏数据；
+  - `previousFiles` 只记「不是本次构建产物」的旧文件。
+
+- **回归**：`tests/build-retention.cjs` 模拟「全新 checkout → 改源码 → 还原 → 重建」，
+  断言上一版哈希产物**仍在磁盘上**、**内容哈希不变**、**被 `retained` 和
+  `previousFiles` 记录**，且 `previousFiles` 不含本次产物。
+  把修复撤掉，这条测试立刻失败：
+  `retained is empty — the CDN promise in build.mjs is not being kept`。
+
+> 附带修掉的一个「假绿灯」：`verify-claims.mjs` 原来只跑 unit+soak 两个套件，
+> 而 `npm test` 跑三个。报告写「23 项」反而能通过校验 ——
+> 因为漏算的正好是新增的那个。现在三个套件全跑，24 = 24 严丝合缝。
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（86 项）
-  npm test             # 回归测试：23 项（单元 17 + 多日推演 6）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（87 项）
+npm test             # 回归测试：24 项（单元 17 + 多日推演 6 + 构建保留回归 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
+npm run test:build    # 只跑构建保留回归：1 项（上一版哈希产物必须被保留并记录）
 npm run build        # 构建
 ```
 
