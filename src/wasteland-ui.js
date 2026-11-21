@@ -210,6 +210,7 @@
             on(target, 'click', function () { if (cb.onSelect) cb.onSelect(captured.id); });
             on(target, 'keydown', function (e) {
               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (cb.onSelect) cb.onSelect(captured.id); return; }
+              if (e.key === 'r' || e.key === 'R') { e.preventDefault(); if (cb.onRotate) cb.onRotate(captured.id); return; }
               var step = {ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];
               if (!step) return;
               e.preventDefault();
@@ -487,6 +488,37 @@
     });
   }
 
+  // ── 声誉面板：整体 + 分阵营 ─────────────────────────────
+  // reputation.factions 之前建了却没人读写，是纯死维度。
+  // 现在它会被改动，也必须被看见 —— 否则玩家还是不知道自己在哪一派眼里是什么名声。
+  function renderReputation(container, reputation) {
+    var rep = reputation || {};
+    var factions = rep.factions || {};
+    container.innerHTML = '';
+    container.style.cssText = '';
+    container.className = 'wl-reputation-board';
+    var overall = Number(rep.overall) || 0;
+    var head = el('div', {class:'wl-reputation-head'});
+    head.appendChild(el('span', {}, '总体声誉'));
+    head.appendChild(el('b', {}, overall > 0 ? '+' + overall : String(overall)));
+    container.appendChild(head);
+    var names = Object.keys(factions);
+    if (!names.length) {
+      container.appendChild(el('p', {class:'wl-empty'}, '还没有阵营声望记录。'));
+      return;
+    }
+    var list = el('div', {class:'wl-reputation-factions'});
+    names.forEach(function (name) {
+      var value = Number(factions[name]) || 0;
+      var row = el('div', {class:'wl-reputation-row'});
+      row.appendChild(el('span', {}, name));
+      row.appendChild(el('b', {class: value > 0 ? 'wl-supply-good' : value < 0 ? 'wl-supply-bad' : ''},
+        value > 0 ? '+' + value : String(value)));
+      list.appendChild(row);
+    });
+    container.appendChild(list);
+  }
+
   function renderMarketBoard(container, marketState) {
     var s = marketState || {};
     // Every category createMarketState() tracks, labelled the same way the item badges are.
@@ -517,7 +549,7 @@
     });
   }
 
-  function renderItemDetail(container, item, tools, playerSkill, marketPrice) {
+  function renderItemDetail(container, item, tools, playerSkill, marketPrice, onRotate) {
     ensureStyles();
     if (!item) { container.innerHTML = ''; return; }
     var conf = typeConf(item.type || item.category);
@@ -586,6 +618,17 @@
         priceBlock.appendChild(col);
       });
       container.appendChild(priceBlock);
+    }
+
+    // 转朝向：只有尺寸不对称（长条形）的货转了才有意义
+    if (onRotate && item.w && item.h && item.w !== item.h) {
+      var rotBtn = el('button', {
+        type: 'button',
+        style: 'margin-top:6px;padding:3px 10px;border:1px solid ' + PHOSPHOR_DIM + ';background:transparent;' +
+          'color:' + PHOSPHOR + ';cursor:pointer;font-family:inherit;font-size:11px;',
+      }, '↻ 转个方向');
+      on(rotBtn, 'click', function () { onRotate(item.id); });
+      container.appendChild(rotBtn);
     }
 
     // Tools
@@ -1244,6 +1287,7 @@
     renderNpcQueue: renderNpcQueue,
     renderMarketBoard: renderMarketBoard,
     renderEventLog: renderEventLog,
+    renderReputation: renderReputation,
     renderContacts: renderContacts,
     renderItemDetail: renderItemDetail,
     renderLootClaim: renderLootClaim,

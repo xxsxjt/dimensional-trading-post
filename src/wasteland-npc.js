@@ -21,8 +21,12 @@
   var PERSONALITY_TAGS=[
     '记仇','软弱','守法','地头蛇','健谈','多疑','冲动','谨慎','嗜酒','清醒主义者','仗义'
   ];
+  // 鉴定专家标签的分类名必须与 ITEM_CATALOG 的 category 完全一致。
+  // 目录用英文键（material / chemical / food …），标签池若写中文，
+  // evaluateTrade 拼出来的 '鉴定专家:' + item.category 永远匹配不上，
+  // 整条「工具鉴定」分支就是死的。
   var ABILITY_TAGS=[
-    '鉴定专家:金属','鉴定专家:化学','鉴定专家:食品',
+    '鉴定专家:material','鉴定专家:chemical','鉴定专家:food',
     '容易被骗',
     '擅长城区搜索','擅长野外搜索','擅长工业区搜索',
     '高体力','武装','搜索:电子','搜索:医疗','搜索:食物','搜索:机械',
@@ -70,9 +74,9 @@
   // 互斥规则（11.3节）
   var MUTEX=[
     ['嗜酒','清醒主义者'],
-    ['鉴定专家:金属','容易被骗'],
-    ['鉴定专家:化学','容易被骗'],
-    ['鉴定专家:食品','容易被骗'],
+    ['鉴定专家:material','容易被骗'],
+    ['鉴定专家:chemical','容易被骗'],
+    ['鉴定专家:food','容易被骗'],
     ['记仇','软弱'],
     ['冲动','谨慎'],
     ['可靠','不可靠']
@@ -160,8 +164,71 @@
     };
   }
 
+  // ── 1b. 柜台商旅的标签 ───────────────────────────────────────────────────
+  // generateNPC 面向拍卖竞拍人，是随机的；柜台商旅的身份是配置里写死的
+  // （工地采购就是工地采购，不该随机成「拾荒者」）。所以这里按角色映射
+  // 出一套与角色一致的标签，而不是复用 generateNPC 的随机池。
+  //
+  // 之前柜台商旅完全没有 tags，evaluateTrade 的「工具判定」分支整条是死的。
+  var ROLE_IDENTITY_TAG={
+    scavenger: '拾荒者',
+    trader:    '批发卖家',
+    medic:     '医疗工作者',
+    contractor:'工地采购',
+    herbalist: '农场主',
+    alchemist: '工程师/技术人员',
+    cultivator:'势力代表',
+    collector: '批发买家',
+    informant: '情报贩子'
+  };
+  var ROLE_FACTION_TAG={
+    scavenger: '中立',
+    trader:    '中立',
+    medic:     '中立',
+    contractor:'势力派系',
+    herbalist: '中立',
+    alchemist: '中立',
+    cultivator:'势力派系',
+    collector: '中立',
+    informant: '黑市派'
+  };
+  // 每个角色最可能带哪种鉴定工具——必须用目录里的英文 category
+  var ROLE_EXPERT_CATEGORY={
+    scavenger: 'material',
+    trader:    'food',
+    medic:     'food',
+    contractor:'material',
+    herbalist: 'food',
+    alchemist: 'chemical',
+    cultivator:'food',
+    collector: 'food',
+    informant: null
+  };
+  // 非鉴定类能力标签（挑掉鉴定专家:*，专家标签单独按角色发）
+  var PLAIN_ABILITY_TAGS=ABILITY_TAGS.filter(function(t){return t.indexOf('鉴定专家:')!==0;});
+
+  function buildDailyTags(role){
+    var tags=[];
+    var identity=ROLE_IDENTITY_TAG[role];
+    if(identity) tags.push(identity);
+    var faction=ROLE_FACTION_TAG[role]||'中立';
+    tags.push(faction);
+
+    // 性格：0-2个（互斥由 addUnique 处理）
+    addUnique(tags,PERSONALITY_TAGS,Math.floor(Math.random()*3));
+
+    // 能力：鉴定专家标签按角色倾向发放，其余能力随机 0-1 个
+    var expertCat=ROLE_EXPERT_CATEGORY[role];
+    if(expertCat&&Math.random()<0.6) tags.push('鉴定专家:'+expertCat);
+    addUnique(tags,PLAIN_ABILITY_TAGS,Math.random()<0.4?1:0);
+
+    // 购物倾向：0-2个
+    addUnique(tags,SHOPPING_TAGS,Math.floor(Math.random()*3));
+    return {tags:tags,faction:faction};
+  }
+
   // ── 2. evaluateTrade(npc, item, playerSkill) ─────────────────────────────
-  // item: {type, authentic, quality}
+  // item: {category, subtype, genuine, quality}
   // playerSkill: 0-1 （0=无据，1=满级）
   // 返回 {confidence, verdict, method}
   //   method: 'tool' | 'skill' | 'guess'
@@ -214,6 +281,22 @@
 
   // ── 3. negotiatePrice(npc, item, basePrice) ──────────────────────────────
   // 返回NPC出价（number）
+  // 注意：目录早就从单层 type 字段改成了 category / subtype 两级英文键，
+  // 这里如果还按 item.type === '酒' 判定，分支永远走不到。
+  // 一律按 category 判定，必要时再看 subtype。
+  function _isAlcohol(item){
+    return !!(item&&item.category==='alcohol');
+  }
+  function _isMedicine(item){
+    return !!(item&&item.category==='medicine');
+  }
+  function _isContraband(item){
+    if(!item)return false;
+    if(item.contraband===true)return true;
+    if(item.category==='illegal')return true;
+    var tags=item.tags||[];
+    return tags.indexOf('illegal')!==-1;
+  }
   function negotiatePrice(npc,item,basePrice){
     var tags=npc.tags||[];
     var price=basePrice;
@@ -229,15 +312,15 @@
     // 拾荒者：低预算抵触高价
     if(tags.indexOf('拾荒者')!==-1)price*=rand(0.5,0.8);
     // 嗜酒且物品是酒：溢价
-    if(tags.indexOf('嗜酒')!==-1&&item&&item.type==='酒')price*=rand(1.1,1.5);
+    if(tags.indexOf('嗜酒')!==-1&&_isAlcohol(item))price*=rand(1.1,1.5);
     // 清醒主义者对酒拒绝
-    if(tags.indexOf('清醒主义者')!==-1&&item&&item.type==='酒')return 0;
+    if(tags.indexOf('清醒主义者')!==-1&&_isAlcohol(item))return 0;
     // 医疗工作者对药品加价
-    if(tags.indexOf('医疗工作者')!==-1&&item&&item.type==='药品')price*=rand(1.0,1.2);
+    if(tags.indexOf('医疗工作者')!==-1&&_isMedicine(item))price*=rand(1.0,1.2);
     // 黑市商人对违禁品兴趣
-    if(tags.indexOf('黑市商人')!==-1&&item&&item.contraband)price*=rand(1.1,1.4);
+    if(tags.indexOf('黑市商人')!==-1&&_isContraband(item))price*=rand(1.1,1.4);
     // 执法人员拒绝违禁品
-    if(tags.indexOf('执法人员')!==-1&&item&&item.contraband)return 0;
+    if(tags.indexOf('执法人员')!==-1&&_isContraband(item))return 0;
     // 资金上限约束
     price=Math.min(price,npc.funds);
     return Math.floor(price);
@@ -315,6 +398,7 @@
   // ── 暴露 ──────────────────────────────────────────────────────────────────
   root.WastelandNPC={
     generateNPC:generateNPC,
+    buildDailyTags:buildDailyTags,
     worldForNpc:worldForNpc,
     // 世界表必须导出：界门选择器靠 WORLD_ORDER 渲染，
     // 商店侧靠 worldById 判断某个世界能不能开张。

@@ -11,7 +11,9 @@
     "art:manifest": "node tools/art/manifest.mjs",
     "art:generate": "node tools/art/generate.mjs",
     "art:index": "node tools/art/index.mjs",
-    "art": "node tools/art/manifest.mjs && node tools/art/generate.mjs && node tools/art/index.mjs && node scripts/build.mjs"
+    "art": "node tools/art/manifest.mjs && node tools/art/generate.mjs && node tools/art/index.mjs && node scripts/build.mjs",
+    "audit": "node tools/audit/audit-content.mjs",
+    "audit:verify": "node tools/audit/verify-claims.mjs"
   },
   "devDependencies": {
     "vite": "8.0.13"

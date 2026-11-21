@@ -637,3 +637,108 @@ assert.ok(deepText(log).includes('9:00'),'day-log entries should carry their hou
 const base = makeNode('div');
 ui.renderBaseView(base,{fixedSlots:{},freeGrid:{cols:4,rows:3,items:{f1:{item:{id:'f1',name:'净水塔',w:1,h:1},x:2,y:1}}}},{});
 assert.ok(deepText(base).includes('净水塔'),'facilities stored in a core grid must render on the base workbench');
+
+/* ══ 转朝向 + 体力 + 柜台过期 ═══════════════════════════════════
+ * 这三件事都是「实现了但玩家看不见」的坑：
+ *  - 转向后核心里占的是 h×w，UI 必须跟着换，否则格子画错；
+ *  - 体力是 state.playerSkill.health，不接上就是纯装饰；
+ *  - 柜台商品存在 _counterItems 里，不结算 expiry 就能无限期存放。
+ */
+const rotateSession = createSession();
+const rotateCore = rotateSession.window.WastelandCore;
+const rotateState = rotateSession.state();
+// 塞一件 1×2 的长条货
+const longItem = rotateCore.createItem('vodka_1l',{quality:3,genuine:true,origin:'trade'});
+assert.equal(longItem.w,1,'the test item starts out one cell wide');
+assert.equal(longItem.h,2,'the test item starts out two cells tall');
+let longPlaced = false, longEntry = null;
+for (let y=0;y<rotateState.grid.rows&&!longPlaced;y++)
+  for (let x=0;x<rotateState.grid.cols&&!longPlaced;x++)
+    if (rotateCore.canPlace(rotateState.grid,longItem,x,y)) {
+      rotateCore.place(rotateState.grid,longItem,x,y);
+      longEntry = rotateState.grid.items[longItem.id];
+      longPlaced=true;
+    }
+assert.ok(longPlaced,'the long item must fit somewhere to begin with');
+// 核心里转向后占位宽度应当交换
+rotateCore.rotate(longItem);
+assert.equal(rotateCore.getAt(rotateState.grid,longEntry.x,longEntry.y),longItem,'getAt must resolve the item that owns a cell');
+assert.equal(longItem.rotated,true,'rotate must flip the item flag');
+// 螺旋找空位必须找到一个能容纳转向后尺寸的位置
+const spot = rotateCore.findFreeSpot(rotateState.grid,longItem,longEntry.x,longEntry.y);
+assert.ok(spot,'findFreeSpot must locate room for the turned item');
+assert.ok(rotateCore.canPlace(rotateState.grid,longItem,spot.x,spot.y),'the spot found must really hold the item');
+console.log('PASS rotating a long item swaps its footprint and getAt resolves the cell owner');
+
+/* 转向必须真的能从 UI 走通：仓库格子回调 → rotateGridItem → 重摆 */
+const turnSession = createSession();
+const turnCore = turnSession.window.WastelandCore;
+// 通过存档把一件 1×2 的长条货塞进仓库（getState 返回的是副本，
+// 直接往副本上放货，商店内部那份 state 里根本没有这件东西）
+const turnSeed = turnSession.state();
+const barrel = turnCore.createItem('water_bottle_2l',{quality:3,genuine:true,origin:'trade'});
+assert.equal(barrel.w,1,'the barrel starts one cell wide');
+assert.equal(barrel.h,2,'the barrel starts two cells tall');
+const barrelGrid = turnCore.createGrid(turnSeed.grid.cols,turnSeed.grid.rows);
+// 先给仓库腾出位置，再把长条货放进去
+Object.keys(turnSeed.grid.items).forEach(id=>turnCore.remove(turnSeed.grid,id));
+let barrelEntry = null;
+for (let y=0;y<turnSeed.grid.rows&&!barrelEntry;y++)
+  for (let x=0;x<turnSeed.grid.cols&&!barrelEntry;x++)
+    if (turnCore.canPlace(turnSeed.grid,barrel,x,y)) {
+      turnCore.place(turnSeed.grid,barrel,x,y);
+      barrelEntry = turnSeed.grid.items[barrel.id];
+    }
+assert.ok(barrelEntry,'the barrel must land somewhere first');
+const turnRun = createSession({'xxsxWastelandShopV1':JSON.stringify(turnSeed)});
+turnRun.nodes.get('wl-switch-base').onclick();
+turnRun.nodes.get('wl-switch-shop').onclick();
+assert.ok(turnRun.state().grid.items[barrel.id],'the barrel must survive the save round-trip');
+// 模拟玩家在仓库里选中它并触发转向
+turnRun.callbacks.grid.onSelect(barrel.id);
+assert.ok(turnRun.callbacks.grid.onRotate,'the grid must expose a rotate callback');
+turnRun.callbacks.grid.onRotate(barrel.id);
+const turnedEntry = turnRun.state().grid.items[barrel.id];
+assert.ok(turnedEntry,'the turned item must still be in the warehouse');
+assert.equal(turnedEntry.item.rotated,true,'rotating must flip the item flag');
+// 占位必须自洽：转向后占 2×1（横躺），格位映射也得跟着换
+const liveGrid = turnRun.state().grid;
+const liveCols = liveGrid.cols;
+const liveEntry = liveGrid.items[barrel.id];
+assert.equal(liveEntry.x,turnedEntry.x,'the entry coordinates must be the ones the shop stored');
+for (let dx=0;dx<2;dx++)
+  assert.equal(liveGrid.cells[liveEntry.y*liveCols+(liveEntry.x+dx)],barrel.id,
+    'every cell of the turned item must point back at it');
+// 转向后不再占用原来那一行（1×2 → 2×1）
+assert.equal(liveGrid.cells[(liveEntry.y+1)*liveCols+liveEntry.x],null,
+  'the row the item used to span must be released');
+// UI 读到的尺寸必须跟着转向一起换，否则格子画出来是错的
+const gridData = turnRun.callbacks.gridData;
+const shown = gridData.cells.find(c=>c.id===barrel.id);
+assert.ok(shown,'the turned item must still be rendered');
+assert.equal(shown.w,2,'the rendered width must follow the rotation');
+assert.equal(shown.h,1,'the rendered height must follow the rotation');
+console.log('PASS the rotate callback turns a warehouse item and the grid renders the new footprint');
+
+/* 体力：state.playerSkill.health 必须是真实资源，读档后要还原 */
+const staminaSession = createSession();
+const staminaSeed = staminaSession.state();
+staminaSeed.playerSkill = {identify:{},negotiate:0,health:5};
+const staminaRun = createSession({'xxsxWastelandShopV1':JSON.stringify(staminaSeed)});
+staminaRun.nodes.get('wl-switch-base').onclick();
+assert.equal(staminaRun.state().playerSkill.health,5,'the stamina pool must be read back from the save file');
+assert.ok(staminaRun.state().playerSkill.health<100,'the stamina fixture must start below the cap');
+
+/* 柜台过期：柜台上的货推进一天必须减一次保质期 */
+const expirySession = createSession();
+const expiryCore = expirySession.window.WastelandCore;
+const expiryState = expirySession.state();
+const perishItem = expiryCore.createItem('bread_loaf',{quality:3,genuine:true,origin:'trade'});
+expiryCore.place(expiryState.grid,perishItem,0,0);
+expiryState._counterItems = {[perishItem.id]:perishItem};
+expiryState.counterState = {slots:[perishItem.id],npcId:'n-test',phase:'negotiating',npc:{offers:[]}};
+const beforeExpiry = perishItem.expiry;
+assert.ok(beforeExpiry>0,'the fixture must actually carry an expiry');
+expiryCore.advanceDay(expiryState);
+assert.equal(perishItem.expiry,beforeExpiry-1,'counter goods must lose a day of shelf life every day');
+console.log('PASS counter goods lose shelf life every day and stamina is read from the save file');

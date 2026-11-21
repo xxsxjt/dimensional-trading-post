@@ -50,7 +50,15 @@
   // 从 ITEM_CATALOG 取 icon/color
   function adaptItem(item) {
     var sku = Core.ITEM_CATALOG[item.skuId] || {};
-    return Object.assign({}, item, {type:item.category || 'misc',icon:_itemIcon(item, sku),color:CATEGORY_COLOR[item.category] || '#a7b8ce'});
+    var rot = !!item.rotated;
+    return Object.assign({}, item, {
+      type:item.category || 'misc',
+      icon:_itemIcon(item, sku),
+      color:CATEGORY_COLOR[item.category] || '#a7b8ce',
+      w: rot ? item.h : item.w,
+      h: rot ? item.w : item.h,
+      rotated: rot
+    });
   }
 
   function adaptGrid(coreGrid, selId) {
@@ -64,11 +72,14 @@
       var item = entry.item;
       var sku  = catalog[item.skuId] || {};
       var cat  = item.category || sku.category || 'misc';
+      // 转向后的货在核心里占的是 h×w，UI 必须跟着换过来，
+      // 否则格子渲染的尺寸和实际占位对不上。
+      var rot  = !!item.rotated;
       return {
         id:      item.id,
         type:    cat,
-        w:       item.w,
-        h:       item.h,
+        w:       rot ? item.h : item.w,
+        h:       rot ? item.w : item.h,
         x:       entry.x,
         y:       entry.y,
         name:    item.name,
@@ -121,11 +132,15 @@
 
   // bringCategories 里可以写品类（material）、子类（herb/pill/ore）或标签（farming）。
   // 三种都匹配同一批条件，写配置的人不必先记住哪个是哪个。
-  function _visitorPool(bring, maxBase) {
+  // excludeCategories 是角色的「不碰清单」：工地采购不收药品与科技品，
+  // 他的带货池和收货池都要把这两类剔掉，否则配置写了等于没写。
+  function _visitorPool(bring, maxBase, exclude) {
     var catalog = Core.ITEM_CATALOG || {};
+    var banned = exclude || [];
     return Object.keys(catalog).filter(function (k) {
       var sku = catalog[k];
       if (!sku || sku.basePrice > maxBase) return false;
+      if (banned.indexOf(sku.category) !== -1) return false;
       if (sku.category === bring) return true;
       if (sku.subtype === bring) return true;
       return (sku.tags || []).indexOf(bring) !== -1;
@@ -141,11 +156,12 @@
     var catalog = Core.ITEM_CATALOG || {};
     var factor = conf.sellFactor || [0.95, 1.05];
     var maxBase = conf.worldId === 'xianxia_sect' ? VISITOR_MAX_BASE_XIANXIA : VISITOR_MAX_BASE;
+    var exclude = conf.excludeCategories || [];
     var offers = [], used = {};
 
     for (var i = 0; i < count * 10 && offers.length < count; i++) {
       var cat = cats[Math.floor(Math.random() * cats.length)];
-      var keys = _visitorPool(cat, maxBase);
+      var keys = _visitorPool(cat, maxBase, exclude);
       if (!keys.length) continue;
       var skuId = keys[Math.floor(Math.random() * keys.length)];
       if (used[skuId]) continue;
@@ -647,6 +663,34 @@
     return Math.max(DISPATCH_EMPTY_FLOOR, tier.emptyHanded - relief);
   }
 
+  // ── 体力（playerSkill.health）──────────────────────────────
+  // 之前 playerSkill.health 初始化成 100 之后既没人读也没人写，
+  // 是一个纯占位字段。现在把它接成真正的体力：
+  //   · 派遣要花体力（远途更贵）
+  //   · 体力不足就派不出去
+  //   · 每天自然恢复
+  var STAMINA_MAX = 100;
+  var STAMINA_RECOVER = 30;          // 每天恢复
+  var STAMINA_DISPATCH_COST = 15;    // 每支派遣的基础消耗
+  var STAMINA_DISPATCH_DAY_COST = 2; // 每多走一天多耗一点
+
+  function _stamina() {
+    if (!state.playerSkill) state.playerSkill = { identify: {}, negotiate: 0, health: STAMINA_MAX };
+    if (typeof state.playerSkill.health !== 'number' || !isFinite(state.playerSkill.health)) {
+      state.playerSkill.health = STAMINA_MAX;
+    }
+    return state.playerSkill.health;
+  }
+  function _spendStamina(amount) {
+    var cur = _stamina();
+    state.playerSkill.health = Math.max(0, cur - amount);
+    return state.playerSkill.health;
+  }
+  function _recoverStamina() {
+    var cur = _stamina();
+    state.playerSkill.health = Math.min(STAMINA_MAX, cur + STAMINA_RECOVER);
+  }
+
   // ── sendDispatch：派一队出去 ──────────────────────────────
   function sendDispatch(destination) {
     if (state.gameOver) return;
@@ -657,6 +701,15 @@
     if (tier.world && tier.world !== _currentWorld()) {
       state.todayEvents.push(_makeEvent('dispatch_fail', '这里派不出去',
         tier.label + ' 只在' + _worldLabel(tier.world) + '开放，今天店里不在那一界。'));
+      render();
+      return;
+    }
+
+    // 体力不够就派不出去：体力是有限的经营资源
+    var staminaCost = STAMINA_DISPATCH_COST + (tier.days || 0) * STAMINA_DISPATCH_DAY_COST;
+    if (_stamina() < staminaCost) {
+      state.todayEvents.push(_makeEvent('dispatch_fail', '体力不足',
+        '派人前往' + tier.label + '需要 ' + staminaCost + ' 点体力，当前只剩 ' + Math.floor(_stamina()) + ' 点。'));
       render();
       return;
     }
@@ -691,6 +744,7 @@
 
     state.gold -= tier.fee;
     candidate.dispatched = true;
+    _spendStamina(staminaCost);
 
     var trip = Core.createDispatch(candidate.id, candidate.name, destination, tier.days);
     trip.fee = tier.fee;
@@ -1252,6 +1306,7 @@
       var npcName = _randomNpcName();
       // 他上门时会带一批自己的货来卖（前期玩家唯一的进货来源）
       var carried = _generateVisitorOffers(conf, (state && state.market) || Core.createMarketState(), npcName);
+      var dailyTags = NPC.buildDailyTags ? NPC.buildDailyTags(conf.role) : {tags:[],faction:'中立'};
       list.push({
         id:         'npc_' + Date.now() + '_' + i + '_' + Math.floor(Math.random() * 9999),
         name:       npcName,
@@ -1266,10 +1321,18 @@
         wants:      wants,
         premium:    conf.premium,
         attitude:   1.0,
+        // 标签体系：evaluateTrade 的「工具鉴定」分支靠 npc.tags 判定。
+        // 之前这里没给 tags，整条工具分支是死的。
+        tags:       dailyTags.tags,
+        faction:    dailyTags.faction,
         intel:      conf.intel  || false,
         intelPrice: intelPrice,
         intelText:  conf.intel  ? _pickIntelText() : null,
         wantAged:   conf.wantAged || false,
+        // 角色的「不碰清单」：工地采购不收药品与科技品。
+        // 之前配置里写了 excludeCategories 却从没人读，
+        // 工地采购照常收购药品与科技品。
+        excludeCategories: (conf.excludeCategories || []).slice(),
         activated:  false
       });
     }
@@ -1339,6 +1402,36 @@
     render();
   }
 
+  // ── rotateGridItem：把一件货转 90° 再放回仓库 ─────────────
+  // 长条形货（2L 桶、1L 酒、行李）横着放不下时，转个身就能塞进窄缝。
+  // 转身后先按原位找空位，找不到就朝四周螺旋找最近的空位；
+  // 实在没有能容纳它的空位，就撤销旋转，货不能凭空消失。
+  function rotateGridItem(itemId) {
+    var entry = state.grid && state.grid.items[itemId];
+    if (!entry) return false;
+    var item = entry.item;
+    var ox = entry.x, oy = entry.y;
+    var wasRotated = !!item.rotated;
+    Core.remove(state.grid, itemId);
+    Core.rotate(item);
+    var spot = Core.findFreeSpot(state.grid, item, ox, oy);
+    if (!spot) {
+      // 放不回去：撤销旋转，塞回原位
+      item.rotated = wasRotated;
+      Core.place(state.grid, item, ox, oy);
+      state.todayEvents.push(_makeEvent('rotate_fail', '转不动',
+        '「' + item.name + '」转过来之后仓库里没有能放下它的地方。'));
+      render();
+      return false;
+    }
+    Core.place(state.grid, item, spot.x, spot.y);
+    state.todayEvents.push(_makeEvent('rotate', '转了个方向',
+      '「' + item.name + '」已转向，摆到 (' + spot.x + ',' + spot.y + ')。'));
+    Core.saveGame(state);
+    render();
+    return true;
+  }
+
   // ── 将单个槽位物品归还仓库 ────────────────────────────────
   function _returnSlotItem(slotIdx) {
     var cs = state.counterState;
@@ -1398,6 +1491,20 @@
     render();
   }
 
+  // resolveOutcome 的结果 → 玩家看得懂的一句话。
+  // 之前 resolveOutcome 算完就被丢掉，玩家永远不知道鉴定结论是什么。
+  var OUTCOME_LABELS={
+    face:   '当场翻脸',
+    note:   '记在心里',
+    silent: '没有声张',
+    spread: '放出风声',
+    report: '举报了执法队',
+    nothing:'不了了之'
+  };
+  function _outcomeLabel(outcome) {
+    return OUTCOME_LABELS[outcome] || '没有声张';
+  }
+
   // ── evaluateCounterOffer：计算 NPC 出价 ──────────────────
   function evaluateCounterOffer() {
     var cs  = state.counterState;
@@ -1414,9 +1521,21 @@
       return state._counterItems && state._counterItems[id];
     }).filter(Boolean);
 
+    // 角色的「不碰清单」：工地采购不收药品与科技品。
+    // 之前 excludeCategories 只写在配置里，从没被消费过。
+    // 现在按「他不肯收的货只按折价算」处理——不是把货弹回去，
+    // 而是这些货不进他的估值，他自然不会为它们付钱。
+    var excluded = npc.excludeCategories || [];
+    var wantedItems = items.filter(function (item) {
+      return excluded.indexOf(item.category) === -1;
+    });
+    var excludedItems = items.filter(function (item) {
+      return excluded.indexOf(item.category) !== -1;
+    });
+
     // 满足 wants 的类目匹配度
     var satisfiedWants = npc.wants.filter(function (want) {
-      return items.some(function (item) { return item.category === want.category; });
+      return wantedItems.some(function (item) { return item.category === want.category; });
     });
     var wantRatio = npc.wants.length > 0
       ? (satisfiedWants.length / npc.wants.length)
@@ -1425,10 +1544,17 @@
     // 拿到手的东西哪怕对方并不急需，也不该低于市价出手。
     var wantBonus = 1.0 + 0.3 * wantRatio;
 
+    // 议价技能：从来没被读过，升级等于白升。
+    // 现在让它真正影响出价：技能越高，越能把「他本来愿意付的价」谈下来。
+    // 系数从 1.0（没技能）到 1.06（满技能），只在小数点后第二位，
+    // 不会把行情破坏掉，但连续成交几十次之后能感觉到差别。
+    var negotiateSkill = (state.playerSkill && state.playerSkill.negotiate) || 0;
+    var negotiateBonus = 1 + 0.06 * (negotiateSkill / 100);
+
     // 求总市场价并做 NPC 鉴定
     var totalValue  = 0;
     var fakePenalty = 1.0;
-    items.forEach(function (item) {
+    wantedItems.forEach(function (item) {
       var marketPrice = Core.computePrice(state.market, item);
       totalValue += marketPrice;
       var cat   = item.category || 'misc';
@@ -1441,6 +1567,18 @@
       }
     });
 
+    // 他不收的货：只肯按两成价格清走（几乎是贱卖），
+    // 而且不计入 wants 匹配。这样「工地采购不收药品」才有实际后果，
+    // 而不是配置里写一句就算数。
+    if (excludedItems.length) {
+      excludedItems.forEach(function (item) {
+        totalValue += Core.computePrice(state.market, item) * 0.2;
+      });
+      cs.excludedCount = excludedItems.length;
+    } else {
+      cs.excludedCount = 0;
+    }
+
     // 陈年酒加成（collector）
     var agedBonus = 1.0;
     if (npc.wantAged) {
@@ -1450,8 +1588,8 @@
       if (hasAged) agedBonus = 1.3;
     }
 
-    // 最终出价 = totalValue × premium × attitude × wantBonus × fakePenalty × agedBonus
-    var multiplier = npc.premium * cs.attitude * wantBonus * fakePenalty * agedBonus;
+    // 最终出价 = totalValue × premium × attitude × wantBonus × fakePenalty × agedBonus × 议价技能
+    var multiplier = npc.premium * cs.attitude * wantBonus * fakePenalty * agedBonus * negotiateBonus;
     cs.offer = Math.max(1, Math.min(
       npc.budget,
       Math.round(totalValue * multiplier)
@@ -1470,8 +1608,16 @@
     state.gold += earned;
     npc.activated = true;
 
-    // 声誉小幅提升
-    NPC.applyEffect(state.reputation, { overall: 2 });
+    // 声誉小幅提升。分阵营声望也要跟着动：
+    // reputation.factions 之前建了却从来没人读过，是纯死维度。
+    // 现在成交会同时抬升「整体」与「这个商旅所属阵营」。
+    var repEffect = { overall: 2 };
+    if (npc.faction && state.reputation && state.reputation.factions
+        && state.reputation.factions[npc.faction] !== undefined) {
+      repEffect.factions = {};
+      repEffect.factions[npc.faction] = 2;
+    }
+    NPC.applyEffect(state.reputation, repEffect);
 
     state.tradeCount = (state.tradeCount || 0) + 1;
     _refreshContacts();
@@ -1490,20 +1636,31 @@
     var summary = '向 ' + npc.name + '（' + npc.label + '）成交，入账 ¤' + earned + '。';
     state.todayEvents.push(_makeEvent('counter_sale', '柜台成交', summary));
 
-    // 假货延迟反馈
+    // 假货延迟反馈。resolveOutcome 之前算出来了却没人调用，
+    // 鉴定结论对玩家完全不可见。现在把它的判定落成事件，
+    // 玩家能看见「他当场发现了 / 记下了 / 传出去了」。
     cs.slots.filter(Boolean).forEach(function (id) {
       var item = state._counterItems && state._counterItems[id];
-      if (item && !item.genuine) {
-        var delay = 1 + Math.floor(Math.random() * 3);
-        var feedback = {
-          label:     npc.name + ' 发现商品有问题',
-          desc:      '购买的【' + item.name + '】被认定为假货。',
-          repEffect: { overall: -5 }
-        };
-        state.fbQueue.add(feedback, delay);
-        // Also keep it in the save so the pending penalty is not lost on reload.
-        if (!Array.isArray(state.fbPending)) state.fbPending = [];
-        state.fbPending.push({ entry: feedback, countdown: delay });
+      if (!item || item.genuine !== false) return;
+
+      var skill = (state.playerSkill.identify && state.playerSkill.identify[item.category || 'misc']) || 0;
+      var ev = NPC.evaluateTrade(npc, item, skill / 100);
+      var outcome = NPC.resolveOutcome(npc, item, ev.verdict);
+      var delay = 1 + Math.floor(Math.random() * 3);
+      var feedback = {
+        label:     npc.name + ' 发现商品有问题',
+        desc:      '购买的【' + item.name + '】被认定为假货（' + _outcomeLabel(outcome) + '）。',
+        repEffect: { overall: -5 }
+      };
+      state.fbQueue.add(feedback, delay);
+      // Also keep it in the save so the pending penalty is not lost on reload.
+      if (!Array.isArray(state.fbPending)) state.fbPending = [];
+      state.fbPending.push({ entry: feedback, countdown: delay });
+
+      // 当场发现的（face）立刻出结果，不进延迟队列
+      if (outcome === 'face') {
+        state.todayEvents.push(_makeEvent('counter_sale_rejected', npc.name + ' 当场翻脸',
+          '【' + item.name + '】被当场识破，' + npc.name + ' 拒绝收货并拂袖而去。'));
       }
     });
 
@@ -1778,6 +1935,13 @@
 
     // 1. Core.advanceDay
     var result = Core.advanceDay(state);
+    // 1b. 体力恢复：睡一觉，人就缓过来一些
+    var staminaBefore = _stamina();
+    _recoverStamina();
+    if (_stamina() > staminaBefore) {
+      state.todayEvents.push(_makeEvent('stamina', '体力恢复',
+        '睡了一觉，体力回到 ' + Math.floor(_stamina()) + ' / ' + STAMINA_MAX + '。'));
+    }
     // 2. day++
     state.day += 1;
     // 3. 处理事件
@@ -1911,9 +2075,11 @@
     var statDay  = document.getElementById('wl-stat-day');
     var statCash = document.getElementById('wl-stat-cash');
     var statRep  = document.getElementById('wl-stat-rep');
+    var statSta  = document.getElementById('wl-stat-stamina');
     if (statDay)  statDay.textContent  = '第 ' + state.day + ' 天 · 第 ' + state.week + ' 周';
     if (statCash) statCash.textContent = '¤ ' + state.gold.toLocaleString();
     if (statRep)  statRep.textContent  = '声誉 ' + ((state.reputation && state.reputation.overall) || 0);
+    if (statSta)  statSta.textContent  = '体力 ' + Math.floor(_stamina()) + ' / ' + STAMINA_MAX;
 
     var shopView = document.getElementById('wl-shop-view');
     var baseView = document.getElementById('wl-base-view');
@@ -1962,7 +2128,9 @@
             var mkt  = Core.computePrice(state.market, entry.item);
             var cat  = entry.item.category || 'misc';
             var sk   = (state.playerSkill.identify && state.playerSkill.identify[cat]) || 0;
-            UI.renderItemDetail(detailEl, adaptItem(entry.item), [], sk, mkt);
+            UI.renderItemDetail(detailEl, adaptItem(entry.item), [], sk, mkt, function (id) {
+              rotateGridItem(id);
+            });
           }
           UI.renderGrid(gridEl, adaptGrid(state.grid, selectedItemId), gridCb);
         },
@@ -1970,6 +2138,10 @@
           var entry = state.grid.items[payload.itemId];
           if (!entry) return;
           var item = entry.item, ox = entry.x, oy = entry.y;
+          // 目标格被占时，用 getAt 看看那格到底是谁；占位者不是自己就直接拒绝，
+          // 不然会把货叠在别人身上。
+          var occupant = Core.getAt(state.grid, payload.toX, payload.toY);
+          if (occupant && occupant.id !== item.id) return;
           Core.remove(state.grid, payload.itemId);
           if (Core.canPlace(state.grid, item, payload.toX, payload.toY)) {
             Core.place(state.grid, item, payload.toX, payload.toY);
@@ -1977,6 +2149,9 @@
             Core.place(state.grid, item, ox, oy);
           }
           render();
+        },
+        onRotate: function (itemId) {
+          rotateGridItem(itemId);
         }
       };
       UI.renderGrid(gridEl, adaptGrid(state.grid, selectedItemId), gridCb);
@@ -2031,6 +2206,40 @@
       }
     }
 
+    // 声望板（整体 + 分阵营）
+    var repEl = document.getElementById('wl-reputation');
+    if (repEl) {
+      if (UI.renderReputation) {
+        UI.renderReputation(repEl, state.reputation);
+      } else {
+        repEl.innerHTML = '';
+        var repHead = document.createElement('div');
+        repHead.className = 'wl-reputation-head';
+        var repLabel = document.createElement('span');
+        repLabel.textContent = '总体声誉';
+        var repValue = document.createElement('b');
+        repValue.textContent = String((state.reputation && state.reputation.overall) || 0);
+        repHead.appendChild(repLabel);
+        repHead.appendChild(repValue);
+        repEl.appendChild(repHead);
+        var repList = document.createElement('div');
+        repList.className = 'wl-reputation-factions';
+        var factions = (state.reputation && state.reputation.factions) || {};
+        Object.keys(factions).forEach(function (name) {
+          var row = document.createElement('div');
+          row.className = 'wl-reputation-row';
+          var nm = document.createElement('span');
+          nm.textContent = name;
+          var vl = document.createElement('b');
+          vl.textContent = String(factions[name]);
+          row.appendChild(nm);
+          row.appendChild(vl);
+          repList.appendChild(row);
+        });
+        repEl.appendChild(repList);
+      }
+    }
+
     // 物品详情
     var detailEl = document.getElementById('wl-detail');
     if (detailEl) {
@@ -2039,7 +2248,9 @@
         var mkt2 = Core.computePrice(state.market, sel.item);
         var cat2 = sel.item.category || 'misc';
         var sk2  = (state.playerSkill.identify && state.playerSkill.identify[cat2]) || 0;
-        UI.renderItemDetail(detailEl, adaptItem(sel.item), [], sk2, mkt2);
+        UI.renderItemDetail(detailEl, adaptItem(sel.item), [], sk2, mkt2, function (id) {
+          rotateGridItem(id);
+        });
       } else {
         selectedItemId = null;
         detailEl.innerHTML = '<p class="wl-empty">点击仓库中的物品查看详情。</p>';
@@ -2410,9 +2621,16 @@
         'background:rgba(255,255,255,.02);' + (npc.activated ? 'opacity:.5;' : '');
       var info = document.createElement('div');
       info.style.flex = '1';
-      info.innerHTML = '<b style="font-size:13px;color:#ddeeff;">' + npc.name + '</b>' +
-        '<br><span style="font-size:11px;color:#7890ab;">' + npc.label +
-        (npc.intel ? ' · 情报 ¤' + npc.intelPrice : ' · 预算 ¤' + npc.budget) + '</span>';
+      var nameEl = document.createElement('b');
+      nameEl.style.cssText = 'font-size:13px;color:#ddeeff;';
+      nameEl.textContent = npc.name;
+      var subEl = document.createElement('span');
+      subEl.style.cssText = 'font-size:11px;color:#7890ab;';
+      subEl.textContent = npc.label +
+        (npc.intel ? ' · 情报 ¤' + npc.intelPrice : ' · 预算 ¤' + npc.budget);
+      info.appendChild(nameEl);
+      info.appendChild(document.createElement('br'));
+      info.appendChild(subEl);
       var btn = document.createElement('button');
       btn.className   = 'wl-btn wl-btn--sm';
       btn.type        = 'button';

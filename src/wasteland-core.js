@@ -152,15 +152,15 @@
     shovel:              {name:'折叠铲',               category:'equipment',subtype:'tool',     basePrice:65,  w:1,h:1,puritySystem:false,expiryDays:null, icon:'⛏️',tags:['tool','digging']},
     saw:                 {name:'手锯',                 category:'equipment',subtype:'tool',     basePrice:75,  w:1,h:2,puritySystem:false,expiryDays:null, icon:'🪚',tags:['tool','cutting']},
     /* ── 违禁/稀有 ── */
-    fake_id:             {name:'伪造证件',             category:'illegal',  subtype:'document', basePrice:500, w:1,h:1,puritySystem:false,expiryDays:null, icon:'🪪',tags:['illegal','document','rare']},
-    signal_jammer:       {name:'信号干扰器',           category:'illegal',  subtype:'device',   basePrice:350, w:1,h:1,puritySystem:false,expiryDays:null, icon:'📡',tags:['illegal','tech','device']},
-    ammo_9mm:            {name:'9mm弹药x30',           category:'illegal',  subtype:'ammo',     basePrice:120, w:1,h:1,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','ammo','weapon']},
-    ammo_762:            {name:'7.62mm弹药x20',        category:'illegal',  subtype:'ammo',     basePrice:200, w:1,h:2,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','ammo','weapon']},
-    pistol:              {name:'手枪',                 category:'illegal',  subtype:'firearm',  basePrice:800, w:1,h:2,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','weapon','firearm']},
-    stun_grenade:        {name:'闪光弹',               category:'illegal',  subtype:'explosive',basePrice:250, w:1,h:1,puritySystem:false,expiryDays:null, icon:'💥',tags:['illegal','explosive','weapon']},
-    explosive:           {name:'炸药块',               category:'illegal',  subtype:'explosive',basePrice:600, w:1,h:1,puritySystem:false,expiryDays:null, icon:'💣',tags:['illegal','explosive','rare']},
-    stolen_goods:        {name:'来历不明货物',         category:'illegal',  subtype:'unknown',  basePrice:150, w:1,h:1,puritySystem:false,expiryDays:null, icon:'📦',tags:['illegal','mystery']},
-    black_market_info:   {name:'黑市情报纸条',         category:'illegal',  subtype:'document', basePrice:80,  w:1,h:1,puritySystem:false,expiryDays:null, icon:'📝',tags:['illegal','document','info']},
+    fake_id:             {name:'伪造证件',             category:'illegal',  subtype:'document', basePrice:500, w:1,h:1,puritySystem:false,expiryDays:null, icon:'🪪',tags:['illegal','document','rare'],contraband:true},
+    signal_jammer:       {name:'信号干扰器',           category:'illegal',  subtype:'device',   basePrice:350, w:1,h:1,puritySystem:false,expiryDays:null, icon:'📡',tags:['illegal','tech','device'],contraband:true},
+    ammo_9mm:            {name:'9mm弹药x30',           category:'illegal',  subtype:'ammo',     basePrice:120, w:1,h:1,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','ammo','weapon'],contraband:true},
+    ammo_762:            {name:'7.62mm弹药x20',        category:'illegal',  subtype:'ammo',     basePrice:200, w:1,h:2,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','ammo','weapon'],contraband:true},
+    pistol:              {name:'手枪',                 category:'illegal',  subtype:'firearm',  basePrice:800, w:1,h:2,puritySystem:false,expiryDays:null, icon:'🔫',tags:['illegal','weapon','firearm'],contraband:true},
+    stun_grenade:        {name:'闪光弹',               category:'illegal',  subtype:'explosive',basePrice:250, w:1,h:1,puritySystem:false,expiryDays:null, icon:'💥',tags:['illegal','explosive','weapon'],contraband:true},
+    explosive:           {name:'炸药块',               category:'illegal',  subtype:'explosive',basePrice:600, w:1,h:1,puritySystem:false,expiryDays:null, icon:'💣',tags:['illegal','explosive','rare'],contraband:true},
+    stolen_goods:        {name:'来历不明货物',         category:'illegal',  subtype:'unknown',  basePrice:150, w:1,h:1,puritySystem:false,expiryDays:null, icon:'📦',tags:['illegal','mystery'],contraband:true},
+    black_market_info:   {name:'黑市情报纸条',         category:'illegal',  subtype:'document', basePrice:80,  w:1,h:1,puritySystem:false,expiryDays:null, icon:'📝',tags:['illegal','document','info'],contraband:true},
     /* ── 灵霄宗门界：原料 ───────────────────────────────────────
      * 这一批是炼丹链的上游。刻意把原料压得很便宜、成品拉得很贵——
      * 差价就是生产系统的全部意义，也是玩家愿意花 ¤ 买机器、烧电、等天数的理由。
@@ -398,6 +398,27 @@
   function rotate(item){
     item.rotated=!item.rotated;
     return item;
+  }
+
+  // 找出能放下 item 的最近空格：以 (preferX,preferY) 为起点向四周螺旋搜索。
+  // 拖动/旋转时目标格常被占死，没有这个函数就只能原地弹回。
+  function findFreeSpot(grid,item,preferX,preferY){
+    if(!grid||!item)return null;
+    var px = preferX==null?0:preferX;
+    var py = preferY==null?0:preferY;
+    var maxR = Math.max(grid.cols,grid.rows);
+    for(var r=0;r<=maxR;r++){
+      for(var dy=-r;dy<=r;dy++){
+        for(var dx=-r;dx<=r;dx++){
+          // 只走这一圈的边界
+          if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;
+          var x=px+dx, y=py+dy;
+          if(x<0||y<0||x>=grid.cols||y>=grid.rows)continue;
+          if(canPlace(grid,item,x,y))return {x:x,y:y};
+        }
+      }
+    }
+    return null;
   }
 
   /* ─── 市场行情 ─────────────────────────────────────────────────── */
@@ -803,6 +824,34 @@
       });
     }
 
+    // 柜台上的货同样要结算保质期。
+    // 柜台货存在 state._counterItems 里，不在 grid.items 里，
+    // 上面那段遍历碰不到它 —— 药、种子、食品放进柜台就能无限期存放。
+    // 这里与仓库走同一套逻辑：到期直接移除并释放台面槽位。
+    var counterItems=state._counterItems;
+    if(counterItems){
+      var slots=(state.counterState&&state.counterState.slots)||[];
+      Object.keys(counterItems).forEach(function(id){
+        var item=counterItems[id];
+        if(!item)return;
+        // 陈年酒也要在柜台上继续变陈年（collector 溢价看的是 agedDays）
+        if(item.agedDays!=null)item.agedDays++;
+        if(item.expiry==null)return;
+        item.expiry--;
+        if(item.expiry<=0){
+          delete counterItems[id];
+          // 释放槽位：过期移除不能把货塞回仓库（仓库满时会丢货）
+          for(var i=0;i<slots.length;i++){
+            if(slots[i]===id){slots[i]=null;break;}
+          }
+          result.expired.push(id);
+          result.events.push('柜台上的「'+item.name+'」已过期并被清走。');
+        }else if(item.expiry<=3){
+          result.warnings.push('柜台上的「'+item.name+'」还有 '+item.expiry+' 天保质期。');
+        }
+      });
+    }
+
     var market=state.market;
     if(market){
       market.day=state.day;
@@ -941,6 +990,7 @@
     remove: remove,
     getAt: getAt,
     rotate: rotate,
+    findFreeSpot: findFreeSpot,
     createMarketState: createMarketState,
     computePrice: computePrice,
     advanceDay: advanceDay,
