@@ -219,6 +219,7 @@ const TEST_SUITES = [
   ['unit', 'tests/wasteland-shop.cjs'],
   ['soak', 'tests/soak.cjs'],
   ['npc', 'tests/npc-rules.cjs'],
+  ['market', 'tests/market-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
 ];
@@ -237,6 +238,7 @@ ok('报告声明的测试项数与真实 PASS 条数一致', claimedTotal && Num
   '报告=' + (claimedTotal ? claimedTotal[1] : 'n/a') + ' 实际=' + passCount);
 ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
 ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs')));
+ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
 ok('构建保留回归文件存在', existsSync(resolve(root, 'tests/build-retention.cjs')));
 

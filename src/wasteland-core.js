@@ -453,6 +453,12 @@
         illegal:     0,
         misc:        0
       },
+      // 断供开始前的基线系数，到期时精确还原。
+      // 缺了这一份，断供恢复之后品类会永久停在 2.7。
+      stockoutBaselines: {},
+      // 每个品类的基线系数（没有冲击/断供时它自己的系数）。
+      // 冲击的 delta 是叠加在它上面的，到期后精确还原回它。
+      baselines: {},
       pendingShocks: []
     };
   }
@@ -855,43 +861,199 @@
     var market=state.market;
     if(market){
       market.day=state.day;
+      /* 行情冲击的正确模型：
+       *
+       * 一次冲击是「把某个品类的系数抬/压 delta，持续 duration 天，然后回到原处」。
+       * 所以：加一次 → 保持 → 精确还原。
+       *
+       * 原实现三处都错了：
+       *   1. 「加」的那一步每天都执行，而「减」只执行一次。
+       *      delta=+0.5、duration=3 时，系数走到 1.5 → 2.0 → 2.0，
+       *      到期只减一次 0.5，净残留 +0.5 —— 每轮冲击都往上抬一层。
+       *   2. 回退时用 _clamp(..., 0.5, 3) 去夹一个「已经被抬高的数」，
+       *      于是残留被夹在 0.5~3 之间，基线永远回不到 1.0。
+       *   3. 多个冲击叠在同一品类上时，各自把自己的 delta 从「共享的系数」里减，
+       *      互相踩：+0.5 与 -0.4 叠加两天后停在 1.1，两个冲击的意图都没了。
+       *
+       * 修法：把「基线」和「当前系数」分开存。
+       *   baselines[cat] —— 该品类的基线系数（没有冲击时就是它本身的系数）
+       *   coefficients[cat] = baselines[cat] + 所有在生效冲击的 delta 之和
+       *
+       * 冲击只在「接手的那一天」加一次 delta，之后每天只是倒计时。
+       * 到期时把那条 delta 从和里摘掉，系数自动回到正确的值；
+       * 全部摘完时系数精确等于基线。
+       *
+       * 这样叠加也是对的：+0.5 与 -0.4 同品类叠加，
+       * 系数是 1.0 + 0.5 - 0.4 = 1.1，两条先后到期后精确回到 1.0。
+       */
+      var baselines=market.baselines;
+      if(!baselines || typeof baselines!=='object') baselines=market.baselines={};
+
+      // 重建当前系数：基线 + 所有在生效冲击的 delta 之和。
+      // 这样到期只要把那条 delta 摘掉，系数自动落到正确的值。
+      //
+      // 钳制区间用 [0.5, 3] —— 和审计口径、注释、以及旧实现的回退区间一致。
+      // 早先这里写的是 [0.2, 5]，两处对不上：
+      // 两个「价格暴跌」冲击叠在同一个品类上时，
+      // 1.0 - 0.4 - 0.4 = 0.2，正好从 [0.2,5] 的下界漏出去，
+      // 落到文档承诺的 0.5~3 之外 —— 物价跌到两折。
+      // 一次「货多到砸价」不该和另一次叠加成两折，
+      // 钳到 0.5 就够了：最多腰斩，不会归零。
+      function _recompute(cat){
+        var base=(typeof baselines[cat]==='number' && isFinite(baselines[cat])) ? baselines[cat] : 1.0;
+        var sum=0;
+        market.pendingShocks.forEach(function(sh){
+          if(sh && sh.category===cat) sum+=sh.delta;
+        });
+        // 断供期间该品类被钉在 3.0（断供就暴涨，这是设计意图）。
+        // 断供优先级高于冲击：断供是「彻底没有货」，不是「货多了一点」。
+        if(market.stockout && market.stockout[cat]>0){
+          market.coefficients[cat]=3.0;
+          return;
+        }
+        market.coefficients[cat]=_clamp(base+sum,0.5,3);
+      }
+
+      /* 受影响的品类：这一轮里接手了冲击的、或者有冲击到期的。
+       * 两者都要重算 ——
+       *   · 接手：系数要加上新的 delta
+       *   · 到期：最后一条走掉时，这个品类不在「还在生效的」名单里，
+       *           但它的系数还停在冲击时的值上，必须显式重算才能回到基线。
+       * 早先漏了后者，于是「冲击到期」后系数永远停在 1.5 不下来。
+       */
+      var affected={};
+
+      /* 新建一条冲击，并当场把基线定下来。
+       *
+       * 基线必须在「创建的那一刻」定，不能等到第二天第一次 tick 时才定 ——
+       * 因为创建的那一刻系数还没被这条冲击动过，此刻的系数就是真基线。
+       * 如果拖到第二天再定，那时系数已经含了这条冲击的 delta，
+       * 把它当基线记下来，冲击一到期系数就停在涨价后的值上，涨价永久化。
+       */
+      function _newShock(cat, delta, duration){
+        var base=baselines[cat];
+        if(typeof base!=='number' || !isFinite(base)){
+          var current=market.coefficients[cat];
+          if(typeof current!=='number' || !isFinite(current)) current=1.0;
+          // 同品类可能已经有别的冲击在生效，当前系数里含着它们的 delta，
+          // 基线要减掉才是真正的起点。
+          base=current-_liveDelta(cat, null);
+          if(typeof base!=='number' || !isFinite(base)) base=1.0;
+          baselines[cat]=base;
+        }
+        return {category:cat, delta:delta, duration:duration, base:base};
+      }
+
+      /* 某个品类当前生效中的冲击的 delta 之和。
+       *
+       * 不变式：coefficients[cat] = baselines[cat] + sum(生效中的 delta)
+       */
+      function _liveDelta(cat, exclude){
+        var sum=0;
+        market.pendingShocks.forEach(function(o){
+          if(o && o!==exclude && o.category===cat) sum+=o.delta;
+        });
+        return sum;
+      }
+
       var still=[];
       market.pendingShocks.forEach(function(shock){
-        market.coefficients[shock.category]=(market.coefficients[shock.category]||1)+shock.delta;
-        market.coefficients[shock.category]=Math.max(0.2,Math.min(5,market.coefficients[shock.category]));
+        if(!shock || !shock.category) return;
+        affected[shock.category]=true;
+
+        // 第一步：确认基线。
+        // 正常路径下基线在创建冲击时就定好了（见 _newShock），
+        // 这里只是兜底：处理旧档里那些没有 base 字段的冲击。
+        if(shock.base===undefined){
+          var base=baselines[shock.category];
+          if(typeof base!=='number' || !isFinite(base)){
+            var current=market.coefficients[shock.category];
+            if(typeof current!=='number' || !isFinite(current)) current=1.0;
+            base=current-_liveDelta(shock.category, shock);
+            if(typeof base!=='number' || !isFinite(base)) base=1.0;
+            baselines[shock.category]=base;
+          }
+          shock.base=base;
+        }
+
         shock.duration--;
         if(shock.duration>0){
           still.push(shock);
-        }else{
-          market.coefficients[shock.category]=_clamp(market.coefficients[shock.category]-shock.delta,0.5,3);
+          return;
         }
+        // 到期：这条不再计入，交给下面统一重算。
       });
+
+      // 先把到期的摘出去，再按剩下的重算 —— 顺序很重要。
       market.pendingShocks=still;
+      Object.keys(affected).forEach(function(cat){ _recompute(cat); });
+
+      /* 断供（stockout）：同样要能回到基线。
+       *
+       * 原实现到期时做 max(0.8, coeff - 0.3)。但断供开始那天已经把系数
+       * 直接设成了 3.0，所以到期时是 3.0 - 0.3 = 2.7 —— 回不到 1.0。
+       * 于是「断供 → 恢复」之后那一类永远停在 2.7，
+       * 400 天下来所有品类都被抬到 2.6~3.0，整个经济系统单向棘轮化。
+       *
+       * 修法：断供也走同一套基线机制。
+       * 断供期间该品类的系数固定为 3.0（这是设计意图：断供就暴涨），
+       * 但基线单独记下来，到期时精确还原。
+       * 断供与冲击同时作用时，基线里已经含有冲击的部分，
+       * 所以还原之后冲击的效果仍然保留。
+       */
       Object.keys(market.stockout).forEach(function(cat){
         if(market.stockout[cat]>0){
           market.stockout[cat]--;
           if(market.stockout[cat]===0){
             result.events.push('「'+categoryName(cat)+'」类物资恢复供应。');
-            market.coefficients[cat]=Math.max(0.8,market.coefficients[cat]-0.3);
+            var so=market.stockoutBaselines||(market.stockoutBaselines={});
+            var base=so[cat];
+            if(typeof base!=='number' || !isFinite(base)){
+              // 旧档没有基线记录：按「基线表」还原，
+              // 至少不能让它永久停在 2.7。
+              base=(typeof baselines[cat]==='number' && isFinite(baselines[cat])) ? baselines[cat] : 1.0;
+            }
+            baselines[cat]=base;
+            delete so[cat];
+            // 断供期间被钉在 3.0，现在恢复成「基线 + 仍在生效的冲击」。
+            // _recompute 里会检查 stockout 是否还在生效 —— 此刻已经归零，
+            // 所以它会算出正确的系数。
+            _recompute(cat);
           }
         }
       });
+
       if(Math.random()<0.15){
         var cats=Object.keys(market.coefficients);
         var cat=cats[Math.floor(Math.random()*cats.length)];
         var evType=Math.floor(Math.random()*3);
         if(evType===0){
           var dur0=_randInt(3,5);
-          market.pendingShocks.push({category:cat,delta:0.5,duration:dur0});
+          market.pendingShocks.push(_newShock(cat, 0.5, dur0));
+          _recompute(cat);
           result.events.push({type:'market',text:'「'+categoryName(cat)+'」类物资出现缺货，价格上涨。',category:cat,coeff:1.5});
         }else if(evType===1){
           var dur1=_randInt(2,3);
-          market.pendingShocks.push({category:cat,delta:-0.4,duration:dur1});
+          market.pendingShocks.push(_newShock(cat, -0.4, dur1));
+          _recompute(cat);
           result.events.push({type:'market',text:'「'+categoryName(cat)+'」类物资大量涌入，价格暴跌。',category:cat,coeff:0.6});
         }else{
           var dur2=_randInt(5,7);
+          // 断供也要记住基线，到期才还原得回去。
+          // 基线用和冲击同一份（baselines），这样断供与冲击并存时
+          // 还原之后冲击的效果还在。
+          var so2=market.stockoutBaselines||(market.stockoutBaselines={});
+          if(typeof so2[cat]!=='number' || !isFinite(so2[cat])){
+            var b0=baselines[cat];
+            if(typeof b0!=='number' || !isFinite(b0)){
+              var c0=market.coefficients[cat];
+              b0=(typeof c0==='number' && isFinite(c0)) ? c0 : 1.0;
+              baselines[cat]=b0;
+            }
+            so2[cat]=b0;
+          }
           market.stockout[cat]=dur2;
-          market.coefficients[cat]=3.0;
+          _recompute(cat);
           result.events.push({type:'market',text:'「'+categoryName(cat)+'」类物资彻底断供，价格飙升。',category:cat,coeff:3.0});
         }
       }

@@ -2840,6 +2840,19 @@
     if (!Array.isArray(state.orders))   state.orders   = [];
     if (!Array.isArray(state.contacts)) state.contacts = defaultContacts();
     if (!Array.isArray(state.todayNPCs)) state.todayNPCs = [];
+    // 行情：断供基线表是后加的字段，旧档没有就补一份空的。
+    // 少了它，断供到期时找不到基线，品类会永远停在 2.7。
+    if (state.market) {
+      if (!state.market.stockoutBaselines || typeof state.market.stockoutBaselines !== 'object') {
+        state.market.stockoutBaselines = {};
+      }
+      if (!state.market.baselines || typeof state.market.baselines !== 'object') {
+        state.market.baselines = {};
+      }
+      if (!Array.isArray(state.market.pendingShocks)) state.market.pendingShocks = [];
+      if (!state.market.coefficients) state.market.coefficients = {};
+      if (!state.market.stockout) state.market.stockout = {};
+    }
     // 世界与选址：旧存档没有这些字段，补成起始世界
     if (!state.worldId || !_isPlayableWorld(state.worldId)) {
       state.worldId = 'wasteland_nuclear';

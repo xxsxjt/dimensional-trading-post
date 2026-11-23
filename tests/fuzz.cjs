@@ -110,6 +110,46 @@ function checkInvariants(st, where, out) {
     num(st.counterState.offer, 'offer');
     num(st.counterState.attitude, 'attitude');
   }
+  /* 行情系数必须在范围内，且不能单向漂移。
+   *
+   * 系数直接乘进 computePrice，所以它一旦漂了，全场物价跟着漂。
+   * 早先的行情实现把系数做成只涨不跌（冲击重复累加 + 断供不复原），
+   * 400 天下来所有品类都被抬到 2.6~3.0，
+   * 而当时没有任何一条不变量盯着它。
+   *
+   * 光看「落在 0.5~3 区间内」太弱 —— 系数漂到 1.5 照样合法。
+   * 这里用一条精确的不变式：
+   *   当某个品类既没有生效中的冲击、也没有断供时，
+   *   它的系数必须**正好等于基线**。
+   * 任何「冲击到期后没回基线」「断供恢复后停在 2.7」的缺陷都会被这条抓住。
+   */
+  if (st.market && st.market.coefficients) {
+    const shocks = st.market.pendingShocks || [];
+    const stockouts = st.market.stockout || {};
+    const baselines = st.market.baselines || {};
+    Object.keys(st.market.coefficients).forEach(cat => {
+      const v = st.market.coefficients[cat];
+      num(v, 'market.coefficients.' + cat);
+      if (v < 0.5 || v > 3) {
+        out.push(where + ': 行情系数越界 ' + cat + '=' + v + '（允许区间 0.5~3）');
+      }
+      const hasShock = shocks.some(sh => sh && sh.category === cat);
+      const hasStockout = stockouts[cat] > 0;
+      if (!hasShock && !hasStockout && typeof baselines[cat] === 'number') {
+        if (Math.abs(v - baselines[cat]) > 1e-9) {
+          out.push(where + ': 行情系数没有回到基线 ' + cat + '=' + v +
+            '（基线 ' + baselines[cat] + '，冲击/断供都已结束，系数必须精确还原）');
+        }
+      }
+    });
+  }
+  if (st.market && Array.isArray(st.market.pendingShocks)) {
+    st.market.pendingShocks.forEach(sh => {
+      if (!sh || !sh.category) { out.push(where + ': 行情冲击条目损坏'); return; }
+      num(sh.delta, 'shock.delta');
+      num(sh.duration, 'shock.duration');
+    });
+  }
   Object.keys(st.grid.items || {}).forEach(id => {
     const it = st.grid.items[id].item;
     if (!it) { out.push(where + ': 物品 ' + id + ' 没有 item'); return; }
