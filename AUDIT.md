@@ -18,7 +18,7 @@
 | WARN | 0 |
 | 通过（无告警） | 目录完整性、配方链、世界覆盖、渠道覆盖、派遣档位、NPC 标签系统、NPC 判定键对齐、死代码、过期机制、纯度系统、DOM id 契约、构建一致性、美术索引、文档数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面 |
 
-  自动化测试 `npm test` **24 项全绿**（单元 17 项 + 多日推演 6 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **87 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **28 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 4 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **88 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -210,14 +210,83 @@ npc.js 的迁移说明注释里写着 `item.type === '酒'` 这种历史写法�
 
 ---
 
+## 四之四、一条假货反馈，扣了两遍声望
+
+`wasteland-npc.js` 的四个纯函数 —— `evaluateTrade`、`resolveOutcome`、
+`negotiatePrice`、`applyEffect` —— 从来没有任何单测。
+E1/E2/E3（鉴定专家标签）、W1（鉴定结论出口）、W2（分阵营声望）这些修复，
+静态审计能看到「接线接上了」，但**没有任何东西证明它们的行为是对的**。
+
+补上这层测试的时候，撞出两个真问题。
+
+### 假货反馈被重复结算（已修）
+
+- **现象**：卖出一件假货，声望掉 **-10**，而 `repEffect` 写的是 `{overall: -5}`。
+  同一条反馈被算了两遍。
+- **根因**：`fbQueue` 是 `createFeedbackQueue()` 返回的对象，真正的队列在**闭包**里：
+
+  ```javascript
+  JSON.stringify({fbQueue: queue})   // → {"fbQueue":{}}
+  ```
+
+  序列化出来是空的 —— 队列内容**根本进不了存档**。
+  真正入档的是 `fbPending`，它是延迟反馈**唯一**的持久化载体。
+
+  但代码在成交时**两处都写**：
+
+  ```javascript
+  state.fbQueue.add(feedback, delay);            // 运行期的活队列
+  state.fbPending.push({entry: feedback, ...});  // 入档的那份
+  ```
+
+  而 `endDay` 又会把 `fbPending` 灌回 `fbQueue`：
+
+  ```javascript
+  state.fbPending.forEach(p => state.fbQueue.add(p.entry, p.countdown));
+  state.fbPending = [];
+  var fired = state.fbQueue.tick();
+  ```
+
+  同一条反馈于是进了队列两次，到期时 `applyEffect` 调两遍，-5 变成 -10。
+
+- **为什么难发现**：静态审计看不见「闭包不可序列化」这件事；
+  而且这条路径要卖出一件**假货**才会触发 —— 正常货永远走不到。
+  延迟还有 1~3 天，不连推几天根本看不到数字变化。
+- **修法**：确立**单一真相源** —— `fbPending` 存，`endDay` 灌进 `fbQueue` 再 `tick`。
+  成交时不再直接写 `fbQueue`。
+- **回归**：`tests/npc-rules.cjs` 造一档、塞一件假货、走真实的
+  「激活商旅 → 上柜 → 成交 → 连推 6 天」，断言声望净变化恰好是 **-5**。
+  把修复撤掉，这条测试立刻失败：`got -10 (a doubled settlement would show -10)`。
+
+### 报价在缺少 funds 时返回 NaN（已修）
+
+- **现象**：`negotiatePrice` 遇到没有 `funds` 字段的 NPC 时返回 **NaN**。
+- **根因**：最后一行是 `price = Math.min(price, npc.funds);`。
+  `Math.min(x, undefined)` = **NaN**，整个报价废掉。
+- **触发条件**：柜台商旅**不是** `generateNPC` 造出来的（它们的身份是配置里写死的），
+  所以身上根本没有 `funds` 字段。现在这条路径只有拍卖在用，
+  而拍卖竞拍人出自 `generateNPC`，带着 `funds` —— 所以它一直没炸。
+  但只要哪天有第二个调用方拿柜台商旅来报价，立刻就是 NaN。
+- **修法**：`funds` 是有限数字时才当作上限用；结果再兜一道 `isFinite`。
+- **回归**：`tests/npc-rules.cjs` 断言无 `funds` 的 NPC 报价必须有限、非负，
+  同时确认「有 `funds` 时上限照旧生效」「拒绝类标签仍然出 0」。
+
+> 教训：**「接线接上了」不等于「行为是对的」**。
+> 上一轮修的 E1/E2/E3/W1/W2 全都只经过了静态审计 ——
+> 静态规则能证明「这行代码被调用了」，证明不了「调用的结果对不对」。
+> 凡是能写成断言的逻辑，都该有对应的运行期测试。
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（87 项）
-npm test             # 回归测试：24 项（单元 17 + 多日推演 6 + 构建保留回归 1）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（88 项）
+npm test             # 回归测试：28 项（单元 17 + 多日推演 6 + NPC 判定 4 + 构建保留 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
+npm run test:npc      # 只跑 NPC 判定回归：4 项（鉴定/后果/声望/报价）
 npm run test:build    # 只跑构建保留回归：1 项（上一版哈希产物必须被保留并记录）
 npm run build        # 构建
 ```

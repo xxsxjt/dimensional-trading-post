@@ -218,6 +218,7 @@ ok('报告列出 18 个通过维度', reportedPass && reportedPass[1].split('、
 const TEST_SUITES = [
   ['unit', 'tests/wasteland-shop.cjs'],
   ['soak', 'tests/soak.cjs'],
+  ['npc', 'tests/npc-rules.cjs'],
   ['build', 'tests/build-retention.cjs'],
 ];
 const suiteRuns = TEST_SUITES.map(([name, rel]) => {
@@ -234,6 +235,7 @@ ok('测试全部通过（无 FAIL）', failCount === 0 && suiteRuns.every(s => s
 ok('报告声明的测试项数与真实 PASS 条数一致', claimedTotal && Number(claimedTotal[1]) === passCount,
   '报告=' + (claimedTotal ? claimedTotal[1] : 'n/a') + ' 实际=' + passCount);
 ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
+ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs')));
 ok('构建保留回归文件存在', existsSync(resolve(root, 'tests/build-retention.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数

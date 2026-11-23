@@ -1719,8 +1719,13 @@
         desc:      '购买的【' + item.name + '】被认定为假货（' + _outcomeLabel(outcome) + '）。',
         repEffect: { overall: -5 }
       };
-      state.fbQueue.add(feedback, delay);
-      // Also keep it in the save so the pending penalty is not lost on reload.
+      // 只写 fbPending，不写 fbQueue。
+      //
+      // fbQueue 的内容在 createFeedbackQueue() 的闭包里，JSON.stringify 存不进去
+      // （序列化出来是 {}），所以 fbPending 才是延迟反馈唯一真正入档的载体。
+      // 之前这里两处都写，而 endDay 又会把 fbPending 灌回 fbQueue ——
+      // 同一条反馈于是进了队列两次，到期时声望被扣两遍（-5 变成 -10）。
+      // 单一真相源：fbPending 存，endDay 灌进 fbQueue 再 tick。
       if (!Array.isArray(state.fbPending)) state.fbPending = [];
       state.fbPending.push({ entry: feedback, countdown: delay });
 

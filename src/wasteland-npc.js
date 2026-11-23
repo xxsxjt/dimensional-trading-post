@@ -321,8 +321,14 @@
     if(tags.indexOf('黑市商人')!==-1&&_isContraband(item))price*=rand(1.1,1.4);
     // 执法人员拒绝违禁品
     if(tags.indexOf('执法人员')!==-1&&_isContraband(item))return 0;
-    // 资金上限约束
-    price=Math.min(price,npc.funds);
+    // 资金上限约束。
+    // NPC 没有 funds 字段时（柜台商旅就没有 —— 它不是 generateNPC 造出来的），
+    // Math.min(price, undefined) 得到 NaN，整个报价直接废掉。
+    // 所以这里只在 funds 是有限数字时才当作上限用。
+    if (typeof npc.funds === 'number' && isFinite(npc.funds)) {
+      price = Math.min(price, npc.funds);
+    }
+    if (!isFinite(price) || price < 0) price = 0;
     return Math.floor(price);
   }
 
