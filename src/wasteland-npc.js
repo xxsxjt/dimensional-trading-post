@@ -380,8 +380,24 @@
 
   // ── 6. createFeedbackQueue() ─────────────────────────────────────────────
   // 延迟反馈队列：add(entry, delay) / tick() → fired[]
-  function createFeedbackQueue(){
-    var queue=[];
+  //
+  // store 是可选的「外部数组」：队列直接把内容存在这个数组里，而不是
+  // 存在自己的闭包里。
+  //
+  // 为什么要这样：早先队列内容只活在自己的闭包里，JSON.stringify 存不进去
+  //（序列化出来是 {}）。于是存档里只能另开一个 fbPending 数组做中转，
+  // 结算时再把 fbPending 灌回队列 —— 中转一旦和队列不同步，
+  // 要么同一条反馈结算两遍（声望扣两遍），要么反馈在存档往返中彻底消失
+  //（卖出假货后存盘退出重进，那 -5 就被躲掉了）。
+  //
+  // 改成共享同一个数组之后：
+  //   · 队列和存档里存的是同一份东西，不存在「两份」也就没有「对不上」
+  //   · 存档天然带着没到期的反馈，退出重进不会丢
+  //   · tick() 就地改这个数组，所以存盘时倒计时也跟着走
+  //
+  // 调用方不传 store 时，行为和从前一致（自建闭包数组）。
+  function createFeedbackQueue(store){
+    var queue = Array.isArray(store) ? store : [];
     return{
       add:function(entry,delay){
         queue.push({entry:entry,countdown:delay||1});
@@ -394,10 +410,15 @@
           if(item.countdown<=0)fired.push(item.entry);
           else remaining.push(item);
         });
-        queue=remaining;
+        // 就地重建，保证 queue 始终还是调用方给的那个数组。
+        // 不能 queue = remaining —— 那样外部拿到的引用就断了。
+        queue.length = 0;
+        for (var i=0;i<remaining.length;i++) queue.push(remaining[i]);
         return fired;
       },
-      size:function(){return queue.length;}
+      size:function(){return queue.length;},
+      /* 队列内容快照。调试和测试要用：直接看 queue 会被外部改动影响。 */
+      peek:function(){return queue.slice();}
     };
   }
 

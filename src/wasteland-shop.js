@@ -1181,7 +1181,12 @@
     var grid    = Core.createGrid(10, 8);
     var market  = Core.createMarketState();
     var rep     = NPC.createReputation();
-    var fbQueue = NPC.createFeedbackQueue();
+    // 待结算反馈只有一份，就存在 fbPending 里。
+    // 队列直接以它为底座，所以存档里存的就是队列本身。
+    // 之前队列用私有闭包、存档另用 fbPending，两份东西要互相同步，
+    // 结果是「反馈被结算两遍」和「反馈在存档往返中消失」两个坑。
+    var fbPending = [];
+    var fbQueue = NPC.createFeedbackQueue(fbPending);
     _placeStarterItems(grid);
     var initial = {
       day:   1,
@@ -1191,6 +1196,7 @@
       grid:  grid,
       market: market,
       reputation: rep,
+      fbPending: fbPending,
       fbQueue:    fbQueue,
       playerSkill: {
         identify: { water: 0, food: 0, material: 0, medicine: 0 },
@@ -1719,15 +1725,14 @@
         desc:      '购买的【' + item.name + '】被认定为假货（' + _outcomeLabel(outcome) + '）。',
         repEffect: { overall: -5 }
       };
-      // 只写 fbPending，不写 fbQueue。
+      // 入队：fbPending 就是队列本身（createFeedbackQueue 以它为底座），
+      // 所以这里写进去的东西会跟着存档走。
       //
-      // fbQueue 的内容在 createFeedbackQueue() 的闭包里，JSON.stringify 存不进去
-      // （序列化出来是 {}），所以 fbPending 才是延迟反馈唯一真正入档的载体。
-      // 之前这里两处都写，而 endDay 又会把 fbPending 灌回 fbQueue ——
+      // 以前这里是「两处都写」（fbQueue.add + fbPending.push），
+      // 而 endDay 又会把 fbPending 灌回 fbQueue ——
       // 同一条反馈于是进了队列两次，到期时声望被扣两遍（-5 变成 -10）。
-      // 单一真相源：fbPending 存，endDay 灌进 fbQueue 再 tick。
-      if (!Array.isArray(state.fbPending)) state.fbPending = [];
-      state.fbPending.push({ entry: feedback, countdown: delay });
+      // 现在只有一份，写一次就是一次。
+      state.fbQueue.add(feedback, delay);
 
       // 当场发现的（face）立刻出结果，不进延迟队列
       if (outcome === 'face') {
@@ -1890,10 +1895,29 @@
       '木质铭牌使用灵霄宗门商会纹章','边框刻有丹房炼炉刻度'
     ];
     var clueCount = tier === 'low' ? 1 : tier === 'mid' ? 2 : 3;
+    /* 线索必须互不相同，而且不能靠「重试直到抽到没用过的」来实现。
+     *
+     * 以前这里是 while + 随机重抽：抽到用过的就再来一次。
+     * 一旦随机源退化（同一局里 Math.random 一直返回同一个值，
+     * 或者被测试/插件钉死），每次抽的都是同一条，
+     * 循环就永远出不来 —— 整个游戏卡死在开拍卖这一步。
+     *
+     * 现在改成「先洗牌，再取前 N 条」：
+     * 结果一样是不重复的线索，但循环次数固定，不会挂。
+     */
     var used = {}, clues = [];
-    while (clues.length < clueCount) {
-      var c = cluePool[Math.floor(Math.random() * cluePool.length)];
-      if (!used[c]) { used[c] = true; clues.push({ id: 'c' + clues.length, label: c, revealed: true }); }
+    var shuffledClues = cluePool.slice();
+    for (var ci = shuffledClues.length - 1; ci > 0; ci--) {
+      var cj = Math.floor(Math.random() * (ci + 1));
+      var tmp = shuffledClues[ci];
+      shuffledClues[ci] = shuffledClues[cj];
+      shuffledClues[cj] = tmp;
+    }
+    for (var ck = 0; ck < clueCount && ck < shuffledClues.length; ck++) {
+      var c = shuffledClues[ck];
+      if (used[c]) continue;
+      used[c] = true;
+      clues.push({ id: 'c' + clues.length, label: c, revealed: true });
     }
     var names = [
       '裂隙漂流物 #' + (100 + Math.floor(Math.random() * 900)),
@@ -1992,13 +2016,11 @@
         '的洽谈还没谈成，货物已退入仓库。'));
     }
 
-    // 延迟反馈：队列与存档中的待结算反馈都要走一遍
-    if (Array.isArray(state.fbPending) && state.fbPending.length) {
-      state.fbPending.forEach(function (pending) {
-        if (pending && pending.entry) state.fbQueue.add(pending.entry, pending.countdown || 1);
-      });
-      state.fbPending = [];
-    }
+    // 延迟反馈：队列就是 fbPending 本身（存档里存的是同一个数组），
+    // 所以这里不需要「把 fbPending 灌回队列」这一步。
+    // 以前那一步 + 清空 fbPending 会让没到期的反馈在存档往返中消失：
+    // 反馈进了闭包队列，闭包又存不进存档，卖出假货后存盘退出重进，
+    // 那笔 -5 声望就被躲掉了。
     var fired = state.fbQueue.tick();
     fired.forEach(function (fb) {
       state.todayEvents.push(_makeEvent('feedback', fb.label || '延迟反馈', fb.desc || ''));
@@ -2833,12 +2855,20 @@
     state.todayNPCs.forEach(function (npc) {
       if (!Array.isArray(npc.offers)) npc.offers = [];
     });
+    // 待结算反馈：数组就是队列的底座，读档后要把队列重新绑到这个数组上。
+    // 读档时 fbQueue 是从 JSON 来的空对象（方法全丢），必须重建。
     if (!Array.isArray(state.fbPending)) state.fbPending = [];
-    if (state.fbPending.length && state.fbQueue && typeof state.fbQueue.add === 'function') {
-      state.fbPending.forEach(function (pending) {
-        if (pending && pending.entry) state.fbQueue.add(pending.entry, pending.countdown || 1);
-      });
-      state.fbPending = [];
+    // 旧档里可能残留格式不对的条目，顺手滤掉，别让 tick 崩在 undefined 上。
+    //
+    // 必须就地删，不能用 filter 重新赋值：
+    // filter 会换掉数组的引用，而队列绑的是「原来那个」，
+    // 于是队列和 state.fbPending 就分成两个数组了 ——
+    // 队列里的东西照样不入档，一切又回到老问题。
+    for (var fi = state.fbPending.length - 1; fi >= 0; fi--) {
+      var fp = state.fbPending[fi];
+      if (!fp || !fp.entry || typeof fp.countdown !== 'number') {
+        state.fbPending.splice(fi, 1);
+      }
     }
     if (!state.counterState) state.counterState = {};
     if (!Array.isArray(state.counterState.slots)) state.counterState.slots = new Array(32).fill(null);
@@ -2884,8 +2914,11 @@
         health: 100
       };
     }
+    // 队列必须绑在 state.fbPending 上，不能自建一个空数组。
+    // 读档后 fbQueue 是从 JSON 来的空对象（方法全丢），所以每次读档都要重建；
+    // 重建时把底座交给它，存档里的待结算反馈才认得出来、也才留得住。
     if (!state.fbQueue || typeof state.fbQueue.tick !== 'function') {
-      state.fbQueue = NPC.createFeedbackQueue();
+      state.fbQueue = NPC.createFeedbackQueue(state.fbPending);
     }
 
     // 重置当日状态——但如果存档里有同一天的NPC列表则不刷新（防止退出重进刷客户）
