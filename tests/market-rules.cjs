@@ -250,15 +250,38 @@ console.log('PASS a stockout restores the baseline when it ends instead of stick
    * 所以第 400 天完全可能刚好落下一条新冲击 ——
    * 它还在生效中，pendingShocks 当然非空。这不是缺陷，是时序事实。
    *
-   * 真正要守的不变式是「所有冲击都结束后，系数精确回到基线」，
-   * 所以这里再推 10 天把冲击全部走完，然后查精确不变式。
+   * 真正要守的不变式是「所有冲击都结束后，系数精确回到基线」。
+   *
+   * 排空窗口不能写死天数。
+   * 以前写的是「再推 10 天」—— 但断供（stockout）的时长是 5~7 天，
+   * 而排空窗口里**还会新落一条断供**（随机事件，每天 15% 概率）。
+   * 于是第 401 天新落一条 7 天的断供，第 410 天它还没结束：
+   * 窗口不够长，系数自然回不到基线 —— 报出来的是假红。
+   *
+   * 修法：一直推到「没有待生效冲击、也没有断供」为止，
+   * 上限 60 天（真有问题的话 60 天足够暴露，不会无限等）。
+   * 这样断言的是「冲击结束后精确回到基线」这条真正的不变式，
+   * 而不是「10 天之内一定结束」这条本来就不成立的事实。
    */
-  for (let d=0; d<10; d++) s.endDay();
+  let drainDays = 0;
+  const MAX_DRAIN = 60;
+  while (drainDays < MAX_DRAIN) {
+    const cur = s.state().market;
+    const shocksLeft = (cur.pendingShocks || []).length;
+    const stockoutsLeft = Object.keys(cur.stockout || {})
+      .filter(c => cur.stockout[c] > 0).length;
+    if (shocksLeft === 0 && stockoutsLeft === 0) break;
+    s.endDay();
+    drainDays++;
+  }
 
   const settled = s.state();
   assert.equal(settled.market.pendingShocks.length, 0,
     'every shock must have expired after the drain window, still pending: ' +
     JSON.stringify(settled.market.pendingShocks));
+  assert.equal(Object.keys(settled.market.stockout || {})
+    .filter(c => settled.market.stockout[c] > 0).length, 0,
+    'every stockout must have expired after the drain window');
   settled.market.coefficients && Object.keys(settled.market.coefficients).forEach(c => {
     const v = settled.market.coefficients[c];
     const base = settled.market.baselines ? settled.market.baselines[c] : undefined;
@@ -266,8 +289,9 @@ console.log('PASS a stockout restores the baseline when it ends instead of stick
       'category "' + c + '" must settle exactly on its baseline after every shock expires, ' +
       'got ' + v + ' vs baseline ' + base);
   });
+  console.log('PASS the market coefficients do not drift over 400 days of random play ' +
+    '(drained in ' + drainDays + ' days)');
 }
-console.log('PASS the market coefficients do not drift over 400 days of random play');
 
 /* ══ 六、存档往返不能把行情搞乱 ══════════════════════════════ */
 {

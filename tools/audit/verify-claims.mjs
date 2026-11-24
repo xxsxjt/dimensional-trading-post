@@ -221,6 +221,7 @@ const TEST_SUITES = [
   ['npc', 'tests/npc-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
+  ['auction-week', 'tests/auction-week.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
@@ -243,6 +244,8 @@ ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
+ok('拍卖整周回归文件存在', existsSync(resolve(root, 'tests/auction-week.cjs')));
+ok('拍卖整周变异测试文件存在', existsSync(resolve(root, 'tests/auction-week-mutation.cjs')));
 ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.cjs')));
 ok('基础玩法变异测试文件存在', existsSync(resolve(root, 'tests/loop-mutation.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
@@ -275,6 +278,55 @@ ok('L3 结算时无条件归还柜台货物', /state\.todayEvents\s*=\s*\[\];[\s
 ok('L3 结算不再按 npcId 有条件归还', !/if\s*\(state\.counterState\.npcId\)\s*_returnCounterItems\(\);/.test(
   (() => { const i = shop.indexOf('function endDay'); return i >= 0 ? stripComments(shop.slice(i, i + 2600)) : ''; })()
 ));
+
+/* 6b-3. 拍卖整周这一轮修的几处，必须在源码里真的成立。
+ *
+ * A1 周结算直接覆盖未完成的拍卖
+ *    换周时 `state.auction = _createAuctionState()` 把旧的盖掉，
+ *    玩家这一局就凭空消失了 —— 实测 1400 局里 717 局（51.2%）没走完就被换掉。
+ *    现在换周前必须先 _settlePendingAuction()。
+ *
+ * A2 每日推进在最后一拍让 NPC 白捡胜局
+ *    一拍的正常顺序是「NPC 举牌 → 玩家跟拍 → 这一拍结束」。
+ *    每日推进是「NPC 举牌 → 直接走一拍」，玩家没有跟拍机会。
+ *
+ * A3 补拍期间 NPC 抬价
+ *    玩家不在场，没人应答，NPC 单方面抬价就是在改写结果。
+ *
+ * A4 周结算与每日推进的先后
+ *    换周当天如果先做每日推进，NPC 会在玩家不在场时抢走领先。
+ *    必须是「先结清旧局 → 再开新局 → 不做当日推进」。
+ *
+ * A5 收场方式必须留痕
+ *    settledBy 三个取值区分「自然走完 / 换周补拍 / 兜底」，
+ *    没有它就看不出某一局到底是怎么收的。 */
+const endDayBody = (() => {
+  const i = shop.indexOf('function endDay');
+  return i >= 0 ? stripComments(shop.slice(i, i + 4200)) : '';
+})();
+const settleFn = (() => {
+  const i = shop.indexOf('function _settlePendingAuction');
+  return i >= 0 ? stripComments(shop.slice(i, i + 2200)) : '';
+})();
+const advanceFn = (() => {
+  const i = shop.indexOf('function _advanceAuctionDaily');
+  return i >= 0 ? stripComments(shop.slice(i, i + 900)) : '';
+})();
+ok('A1 换周前先结清上一局拍卖', /_settlePendingAuction\(\);\s*state\.auction\s*=\s*_createAuctionState\(\);/.test(endDayBody));
+ok('A1 存在 _settlePendingAuction 结算函数', settleFn.length > 0, 'fn=' + settleFn.length);
+ok('A2 每日推进在最后一拍保护玩家领先',
+  /isLastRound[\s\S]{0,200}?currentLeader\s*===\s*'player'/.test(advanceFn));
+ok('A3 补拍期间 NPC 不举牌',
+  !/_npcAuctionBid\(\)/.test((() => {
+    const m = settleFn.match(/while\s*\([^)]*\)\s*\{[\s\S]*?\n\s*\}/);
+    return m ? m[0] : '';
+  })()),
+  '补拍循环里不应出现 _npcAuctionBid');
+ok('A4 换周当天的每日推进被跳过', /if\s*\(\s*!isWeekSwitch\s*\)\s*\{\s*_advanceAuctionDaily\(\);/.test(endDayBody));
+ok('A4 周结算排在每日推进之前',
+  endDayBody.indexOf('_settlePendingAuction();') >= 0 &&
+  endDayBody.indexOf('_settlePendingAuction();') < endDayBody.indexOf('_advanceAuctionDaily();'));
+ok('A5 拍卖收场方式留痕', /settledBy/.test(shop) && /lastAuctionResult/.test(shop));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

@@ -58,11 +58,11 @@
       "gzipBytes": 19033
     },
     "src/wasteland-shop.js": {
-      "path": "src/wasteland-shop.abb2c6252d95.js",
-      "sourceSha256": "521eb73e3fccb980f0838d64a2c56de123af0f244a3b0da5d630b67b995feee4",
-      "sha256": "abb2c6252d95c8192e4f1d24d6a11147c811c4801917295af81df2cd7595bb86",
-      "bytes": 143432,
-      "gzipBytes": 44977
+      "path": "src/wasteland-shop.c5f67b49c59c.js",
+      "sourceSha256": "97e5866e0238d8ab4bf9c807556e654cb88ebf67045b9a0999bd1a218f497031",
+      "sha256": "c5f67b49c59cb59c378bf2beb4689d4a54a04e45320c2e8ceb94564229a0dd4a",
+      "bytes": 151399,
+      "gzipBytes": 47730
     },
     "assets/items/acetone.png": {
       "path": "assets/items/acetone.c3a4a4c6228e.png",
@@ -1873,7 +1873,7 @@
     "wasteland.html": {
       "path": "wasteland.html",
       "sourceSha256": "9271da8aaa369da63689d23bd737a14663ed172f29641212c9ad25af5ffcc44a",
-      "sha256": "a1bd295cb019dd4957a52fa25152790c6a3a7f0c431c0d412878ec926ee97271",
+      "sha256": "e4b2b1a3607862928b2913515a19988bc323ac566fa540329b78e686a554971e",
       "bytes": 11131,
       "gzipBytes": 4214
     }
@@ -1939,6 +1939,11 @@
       "path": "src/wasteland-shop.72d49d124921.js",
       "sha256": "72d49d1249210e089bbe88970f4a059fb2e6231067f29f845977bd48db99bad7",
       "bytes": 140461
+    },
+    "src/wasteland-shop.abb2c6252d95.js": {
+      "path": "src/wasteland-shop.abb2c6252d95.js",
+      "sha256": "abb2c6252d95c8192e4f1d24d6a11147c811c4801917295af81df2cd7595bb86",
+      "bytes": 143432
     }
   },
   "previousFiles": {
@@ -2001,6 +2006,11 @@
       "path": "src/wasteland-shop.72d49d124921.js",
       "sha256": "72d49d1249210e089bbe88970f4a059fb2e6231067f29f845977bd48db99bad7",
       "bytes": 140461
+    },
+    "src/wasteland-shop.abb2c6252d95.js": {
+      "path": "src/wasteland-shop.abb2c6252d95.js",
+      "sha256": "abb2c6252d95c8192e4f1d24d6a11147c811c4801917295af81df2cd7595bb86",
+      "bytes": 143432
     }
   }
 }

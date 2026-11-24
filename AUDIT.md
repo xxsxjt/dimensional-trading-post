@@ -18,7 +18,7 @@
 | WARN | 0 |
 | 通过（无告警） | 目录完整性、配方链、世界覆盖、渠道覆盖、派遣档位、NPC 标签系统、NPC 判定键对齐、死代码、过期机制、纯度系统、DOM id 契约、构建一致性、美术索引、文档数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面 |
 
-  自动化测试 `npm test` **54 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **100 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **64 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **109 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -584,18 +584,100 @@ E1/E2/E3（鉴定专家标签）、W1（鉴定结论出口）、W2（分阵营�
 
 ---
 
+## 四之六、拍卖跨周生命周期：51.2% 的局曾经凭空消失（本轮新增）
+
+### 缺陷 A1：周结算直接覆盖未完成的拍卖
+
+`endDay()` 里换周那一刻，原本的写法是：
+
+```javascript
+if (isWeekSwitch) {
+  state.week += 1;
+  state.gold -= state.rent;
+  state.auction = _createAuctionState();   // ← 旧的直接没了
+}
+```
+
+拍卖的 `maxRounds` 是 `5 + Math.floor(Math.random() * 4)`，即 5~8 拍；
+而一局游戏只有 7 天。只要玩家没把拍子走完，
+或者这一局的 `maxRounds` 抽到 8，**这局拍卖就必然活不过换周**。
+旧对象被新对象覆盖，玩家既没拿到拍品、也没被告知结果、存档里也查不到记录。
+
+探针 `probe-auctionreplace.cjs` 跑 200 个随机种子 × 60 天：
+**1400 局拍卖里有 717 局（51.2%）被中途丢弃**，
+既没有赢家，也没有奖品，更没有败局的交代。
+
+### 修法：换周先结清旧局，再开新局
+
+```javascript
+function _settlePendingAuction() {
+  var auc = state.auction;
+  if (!auc || auc.done) return;
+  auc.settledBy = 'week';
+  var guard = 0;
+  while (!auc.done && auc.round < auc.maxRounds && guard < 32) {
+    _advanceAuctionRound();     // 只推进轮次，不让 NPC 举牌
+    guard++;
+  }
+  if (!auc.done) {
+    auc.done = true;
+    auc.playerWon = (auc.currentLeader === 'player');
+    auc.settledBy = 'fallback';
+    state.lastAuctionResult = { tier: auc.tier, settledBy: auc.settledBy, playerWon: auc.playerWon,
+                                round: auc.round, maxRounds: auc.maxRounds, currentBid: auc.currentBid };
+    state.todayEvents.push(_makeEvent('auction_lost', '拍卖结束',
+      '本周拍卖因换局提前结算，最终成交 ¤' + auc.currentBid +
+      '，由 ' + (auc.currentLeader || '其他竞拍者') + ' 拍得。'));
+  }
+}
+```
+
+三个要点：
+
+1. **补拍不抬价。** 补拍循环里只调 `_advanceAuctionRound()`，
+   不调 `_npcAuctionBid()`。玩家不在场时，NPC 不能在补拍过程中抢走玩家已经领先的局。
+2. **每日推进最后一拍同样保护领先。**
+   `_advanceAuctionDaily()` 在「最后一拍且玩家领先」时跳过 NPC 举牌 ——
+   现场玩法里玩家举牌本来就有最后回应权，这一条保证自动推进不会剥夺它。
+3. **收场方式留痕。** 每局拍卖结束时写下 `state.lastAuctionResult`，
+   其中 `settledBy` 区分三种收场：`rounds`（自然走完）、`week`（换周结清）、`fallback`（兜底）。
+
+另外把周结算排到每日推进**之前**，并在换周当天跳过 `_advanceAuctionDaily()`，
+让新开的一局从第 0 拍、满预算干净开始。
+
+### 回归测试
+
+`tests/auction-week.cjs`（10 项）与 `tests/auction-week-mutation.cjs`（6/6 变异全被抓住）：
+
+| 断言 | 结果 |
+| --- | --- |
+| 每次换周前拍卖必有裁决 | 840 次换周，0 局被丢弃 |
+| 旧局先结清，新局才开 | 通过 |
+| 结清时只有赢了才发奖品，扣款 = 租金 + 竞价 | 153 胜 / 14 负 |
+| 换周时仍领先 → 判玩家赢 | 252 局换周结清全部认领先 |
+| 每局都记录收场方式 | `rounds:2187 / week:1744 / fallback:0` |
+| 补拍把轮次推满且尊重领先 | 40 例通过 |
+| 每日推进不抢玩家最后一拍 | 40 例通过 |
+| 兜底路径单独标记 | `settledBy=fallback`，round 33/100 |
+| 拍卖总能自己走完 | 5 局全部有结论 |
+| 跨周数值健全 | 70 天通过 |
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（92 项）
-npm test             # 回归测试：45 项（单元 17 + 多日推演 6 + NPC 判定 8 + 行情回归 6 + 拍卖回归 6 + 随机扫描 1 + 构建保留 1）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（109 项）
+npm test             # 回归测试：64 项（单元 17 + 多日推演 6 + NPC 判定 8 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
 npm run test:npc      # 只跑 NPC 判定回归：8 项（鉴定/后果/声望/报价/延迟反馈/退化随机源/队列与存档绑定）
 npm run test:market   # 只跑行情系数回归：6 项（冲击只加一次/叠加相加/断供复原/长期不漂移/跨存档）
 npm run test:auction  # 只跑拍卖规则回归：6 项（轮次推进/自走结算/NPC 竞价/价值匹配/放不下不扣钱/边角入库）
 npm run test:auction:mutation # 拍卖变异验证：把 6 个缺陷逐个注回源码，确认回归测试全部失败（6/6）
+npm run test:auction:week # 只跑拍卖整周生命周期回归：10 项（跨周结清/旧局先结/奖品到账/领先不被抢/收场留痕/终局保护）
+npm run test:auction:week:mutation # 拍卖整周变异验证：把 6 个缺陷逐个注回源码，确认回归测试全部失败（6/6）
 npm run test:fuzz     # 只跑随机局扫描：1 项（120 局 × 20 天的随机动作 + 存档往返不变量）
 npm run test:build    # 只跑构建保留回归：1 项（上一版哈希产物必须被保留并记录）
 npm run build        # 构建
