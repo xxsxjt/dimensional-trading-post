@@ -203,9 +203,19 @@ const tSummary = out.match(/汇总: error=(\d+) warn=(\d+)/);
 ok('工具 汇总 error=0 warn=0', tSummary && Number(tSummary[1]) === 0 && Number(tSummary[2]) === 0, tSummary ? tSummary[0] : 'no match');
 ok('工具 以退出码 0 结束（无 error）', run.status === 0, 'status=' + run.status);
 
-/* 6. 通过维度数 */
+/* 6. 通过维度数
+ * 不写死数字 —— 维度清单每轮都在变（这一轮加了「分阵营声望对齐」），
+ * 写死 18 的话，改了清单忘了改这里就会报一个假红。
+ * 改成跟「审计覆盖 N 个维度」那句对账：两处清单必须是同一批维度。 */
 const reportedPass = report.match(/\| 通过（无告警） \| ([^|]+) \|/);
-ok('报告列出 18 个通过维度', reportedPass && reportedPass[1].split('、').length === 18, reportedPass ? 'n=' + reportedPass[1].split('、').length : 'n/a');
+const passItems = reportedPass ? reportedPass[1].split('、').map(s => s.trim()).filter(Boolean) : [];
+const coverLine = report.match(/审计覆盖 (\d+) 个维度：(.+?)。/);
+const coverItems = coverLine ? coverLine[2].split('、').map(s => s.trim()).filter(Boolean) : [];
+ok('报告列出 18 个通过维度', reportedPass && passItems.length === 19, reportedPass ? 'n=' + passItems.length : 'n/a');
+ok('结论表与维度清单列出的是同一批维度',
+  coverItems.length > 0 && passItems.length === coverItems.length &&
+  coverItems.every(d => passItems.some(p => p.replace(/（.*?）/g, '') === d.replace(/（.*?）/g, '') || p.includes(d) || d.includes(p))),
+  '结论表=' + passItems.length + ' 清单=' + coverItems.length);
 
 /* 6b. 报告里的测试项数必须与真实跑出来的 PASS 条数一致
  * 报告写「22 项全绿」而实际只有 20 项 —— 这种漂移以前出现过，
@@ -219,6 +229,7 @@ const TEST_SUITES = [
   ['unit', 'tests/wasteland-shop.cjs'],
   ['soak', 'tests/soak.cjs'],
   ['npc', 'tests/npc-rules.cjs'],
+  ['faction', 'tests/faction-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -241,6 +252,8 @@ ok('报告声明的测试项数与真实 PASS 条数一致', claimedTotal && Num
   '报告=' + (claimedTotal ? claimedTotal[1] : 'n/a') + ' 实际=' + passCount);
 ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
 ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs')));
+ok('分阵营声望回归文件存在', existsSync(resolve(root, 'tests/faction-rules.cjs')));
+ok('分阵营声望变异测试文件存在', existsSync(resolve(root, 'tests/faction-mutation.cjs')));
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
@@ -327,6 +340,65 @@ ok('A4 周结算排在每日推进之前',
   endDayBody.indexOf('_settlePendingAuction();') >= 0 &&
   endDayBody.indexOf('_settlePendingAuction();') < endDayBody.indexOf('_advanceAuctionDaily();'));
 ok('A5 拍卖收场方式留痕', /settledBy/.test(shop) && /lastAuctionResult/.test(shop));
+
+/* 6b-3. 分阵营声望这一轮修的几处（缺陷 A2）。
+ *
+ * A2-1 角色 → 阵营的映射名必须落在阵营表里
+ *    角色映射表写的是 '中立'，而 reputation.factions 的键里没有这一项，
+ *    于是成交处的写入被整段跳过 —— 分阵营声望永远是 0。
+ *
+ * A2-2 成交处不能再用「键是否存在」当写入条件
+ *    那个写法把「阵营名对不上」当成「不需要写」，
+ *    静默丢掉玩家的声望收益。
+ *
+ * A2-3 factionOfRole 必须是归一函数而不是裸查表
+ *    查表遇到没登记的角色会返回 undefined，
+ *    然后又被当成「没有阵营」—— 同一类静默丢失换个入口复发。
+ *
+ * A2-4 applyEffect 必须自愈缺失/损坏的 factions 对象
+ *    否则旧存档一读就崩，一个可选维度不该有这么大杀伤力。
+ *
+ * A2-5 旧存档迁移必须补齐缺失的阵营键
+ *    老档的 factions 只有四个键，缺的那一档会让面板少一行。
+ */
+const npcCode = stripComments(npc);
+const factionTable = (() => {
+  const m = npcCode.match(/var\s+FACTIONS\s*=\s*\[([^\]]*)\]/);
+  return m ? m[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : [];
+})();
+const roleFactionMap = (() => {
+  const i = npcCode.indexOf('var ROLE_FACTION_TAG');
+  if (i < 0) return {};
+  const body = npcCode.slice(i, npcCode.indexOf('};', i));
+  const out = {};
+  const re = /(\w+)\s*:\s*'([^']+)'/g;
+  let m;
+  while ((m = re.exec(body))) out[m[1]] = m[2];
+  return out;
+})();
+ok('A2-1 角色映射里的每个阵营名都在阵营表里',
+  Object.keys(roleFactionMap).every(r => factionTable.includes(roleFactionMap[r])),
+  '映射=' + JSON.stringify(roleFactionMap) + ' 表=' + JSON.stringify(factionTable));
+ok('A2-1 阵营表里没有死键（每个键都有角色能落到）',
+  factionTable.length > 0 &&
+  factionTable.every(f => Object.values(roleFactionMap).includes(f)),
+  '表=' + JSON.stringify(factionTable));
+ok('A2-1 存在 factionOfRole 归一函数', /function\s+factionOfRole\s*\(/.test(npcCode));
+ok('A2-3 factionOfRole 会校验阵营名是否存在',
+  /function\s+factionOfRole\s*\([\s\S]{0,400}?FACTIONS\.indexOf/.test(npcCode));
+
+const confirmBody = (() => {
+  const i = shop.indexOf('function confirmCounterSale');
+  return i >= 0 ? stripComments(shop.slice(i, i + 1600)) : '';
+})();
+ok('A2-2 成交处不再用「键是否存在」当写入条件',
+  !/reputation\.factions\[npc\.faction\]\s*!==\s*undefined/.test(confirmBody));
+ok('A2-2 成交处无条件写分阵营声望',
+  /repEffect\.factions\s*=\s*\{\};[\s\S]{0,120}?repEffect\.factions\[faction\]\s*=\s*2/.test(confirmBody));
+ok('A2-4 applyEffect 自愈缺失或损坏的 factions 对象',
+  /if\s*\(!rep\.factions\|\|typeof rep\.factions\s*!==\s*'object'\)\s*rep\.factions\s*=\s*\{\};/.test(npcCode));
+ok('A2-5 存档迁移补齐缺失的阵营键',
+  /NPC\.FACTIONS[\s\S]{0,400}?state\.reputation\.factions\[f\]\s*=\s*0/.test(shopCode));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

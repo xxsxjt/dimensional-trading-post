@@ -1721,11 +1721,28 @@
     // 声誉小幅提升。分阵营声望也要跟着动：
     // reputation.factions 之前建了却从来没人读过，是纯死维度。
     // 现在成交会同时抬升「整体」与「这个商旅所属阵营」。
+    //
+    // **写入不能以「键已存在」为前提**（缺陷 A2 的真正形状）。
+    // 原来的写法是：
+    //   if (reputation.factions[npc.faction] !== undefined) { ...写... }
+    // 键还没建出来 → 判假 → 那一笔声望被静默丢掉。
+    // 当时 npc.faction 还是 '中立'，而 faction 表里没有这一项，
+    // 于是**每一次成交的分阵营写入都被跳过**，四个键永远是 0。
+    //
+    // 现在：阵营名取商旅自带的 faction（buildDailyTags 产出的就是
+    // 阵营表里的规范名），只在老档商旅没带 faction 时才用
+    // factionOfRole 兜底归一；写入一律无条件做，
+    // 由 applyEffect 负责把新键补成 0 再加。
     var repEffect = { overall: 2 };
-    if (npc.faction && state.reputation && state.reputation.factions
-        && state.reputation.factions[npc.faction] !== undefined) {
+    var faction = npc.faction;
+    if ((!faction || !state.reputation || !state.reputation.factions ||
+         state.reputation.factions[faction] === undefined)
+        && NPC.factionOfRole && npc.role) {
+      faction = NPC.factionOfRole(npc.role);
+    }
+    if (faction && state.reputation) {
       repEffect.factions = {};
-      repEffect.factions[npc.faction] = 2;
+      repEffect.factions[faction] = 2;
     }
     NPC.applyEffect(state.reputation, repEffect);
 
@@ -3177,6 +3194,23 @@
     }
     if (!state.worldPlace) state.worldPlace = _rollPlace(state.worldId);
     if (typeof state.worldLocked !== 'boolean') state.worldLocked = false;
+    // 声望迁移：旧档的 reputation.factions 只有四个键，缺 '中立'，
+    // 而且可能整个 factions 对象都没有。补齐成 NPC 那边声明的完整阵营表，
+    // 免得老档读进来之后分阵营面板少一行、成交也写不进那一档。
+    if (!state.reputation || typeof state.reputation !== 'object') {
+      state.reputation = NPC.createReputation();
+    }
+    if (!state.reputation.factions || typeof state.reputation.factions !== 'object') {
+      state.reputation.factions = {};
+    }
+    (NPC.FACTIONS || []).forEach(function (f) {
+      if (state.reputation.factions[f] === undefined ||
+          !isFinite(state.reputation.factions[f])) {
+        state.reputation.factions[f] = 0;
+      }
+    });
+    if (!isFinite(state.reputation.overall)) state.reputation.overall = 0;
+    state.reputation.overall = Math.max(-100, Math.min(100, state.reputation.overall));
     // 生产批次：只在有机器的时候才有意义，但没有也要是个数组
     if (!Array.isArray(state.production)) state.production = [];
     state.production = state.production.filter(function (job) {

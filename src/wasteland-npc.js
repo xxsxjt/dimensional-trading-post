@@ -181,17 +181,53 @@
     collector: '批发买家',
     informant: '情报贩子'
   };
+  // 角色 → 阵营。
+  //
+  // 这里的名字必须与下面 createReputation() 里的 FACTIONS **逐字相同**。
+  // 之前这里是 '中立'，而 reputation.factions 的键是
+  // ['执法派','黑市派','拾荒者群体','势力派系'] —— 没有 '中立' 这一项。
+  // 于是 confirmCounterSale 里的 `reputation.factions[npc.faction] !== undefined`
+  // 判假，整段分阵营写入被跳过：
+  //   **分阵营声望永远是 0**，四个键全是死的。
+  // 探针实测：103 个每日商旅里 63 个 faction='中立'，
+  // 成交 1 次后四个阵营的声望全部纹丝不动。
+  //
+  // 现在用一张显式的对照表把角色映射到真实存在的阵营，
+  // 并且让每个阵营都有角色能落到（不然另一个方向又是死键）。
+  //
+  // 拾荒者是废土的主力，工地采购吃执法派的采购票，
+  // 情报贩子跟黑市派穿一条裤子，修士属于势力派系。
   var ROLE_FACTION_TAG={
-    scavenger: '中立',
-    trader:    '中立',
+    scavenger: '拾荒者群体',
+    trader:    '执法派',
     medic:     '中立',
-    contractor:'势力派系',
+    contractor:'执法派',
     herbalist: '中立',
     alchemist: '中立',
     cultivator:'势力派系',
-    collector: '中立',
+    collector: '执法派',
     informant: '黑市派'
   };
+  // 角色不在表里时的兜底阵营。
+  var DEFAULT_FACTION='中立';
+  // createReputation() 的阵营清单——「中立」也是一档，
+  // 不然角色映射表里指向 '中立' 的几个角色又会变成死写入。
+  var FACTIONS=['执法派','黑市派','拾荒者群体','势力派系','中立'];
+  // 哪些角色属于哪个阵营 —— 供 UI 展示与静态审计双向核对。
+  var FACTION_ROLES={
+    '执法派':['trader','contractor','collector'],
+    '黑市派':['informant'],
+    '拾荒者群体':['scavenger'],
+    '势力派系':['cultivator'],
+    '中立':['medic','herbalist','alchemist']
+  };
+  // 把任意角色归到 reputation.factions 里真实存在的键。
+  // 拿不到就退到 '中立'，而不是退到一个不存在的键。
+  function factionOfRole(role){
+    var f=ROLE_FACTION_TAG[role];
+    if(f&&FACTIONS.indexOf(f)!==-1)return f;
+    return DEFAULT_FACTION;
+  }
   // 每个角色最可能带哪种鉴定工具——必须用目录里的英文 category
   var ROLE_EXPERT_CATEGORY={
     scavenger: 'material',
@@ -211,7 +247,10 @@
     var tags=[];
     var identity=ROLE_IDENTITY_TAG[role];
     if(identity) tags.push(identity);
-    var faction=ROLE_FACTION_TAG[role]||'中立';
+    // 阵营必须来自 factionOfRole()：它保证结果一定是 reputation.factions
+    // 里真实存在的键。直接取 ROLE_FACTION_TAG[role] 会在角色表变动时
+    // 又一次写出不存在的键，把分阵营声望静默打死。
+    var faction=factionOfRole(role);
     tags.push(faction);
 
     // 性格：0-2个（互斥由 addUnique 处理）
@@ -399,7 +438,7 @@
   }
 
   // ── 5. createReputation() ────────────────────────────────────────────────
-  var FACTIONS=['执法派','黑市派','拾荒者群体','势力派系'];
+  // FACTIONS 定义在上面（与 ROLE_FACTION_TAG 同一张表）。
 
   function createReputation(){
     var rep={overall:0,factions:{}};
@@ -409,6 +448,11 @@
 
   // effect: {overall?, factions?:{阵营:delta}}
   function applyEffect(rep,effect){
+    if(!rep||!effect)return;
+    // 旧存档可能没有 factions 这个对象（或者它被写坏成非对象）。
+    // 不补的话 applyEffect 会在 rep.factions[f] 上抛 TypeError，
+    // 整个日结算连带崩掉 —— 一个可选维度不该有这么大杀伤力。
+    if(!rep.factions||typeof rep.factions!=='object')rep.factions={};
     if(effect.overall)rep.overall=clamp(rep.overall+effect.overall,-100,100);
     if(effect.factions){
       Object.keys(effect.factions).forEach(function(f){
@@ -478,6 +522,12 @@
     resolveOutcome:resolveOutcome,
     createReputation:createReputation,
     applyEffect:applyEffect,
+    // 阵营表必须导出：静态审计要靠它核对
+    // 「每个 faction 键都有角色能落到」和「每个角色都能落到某个存在的键」。
+    // 这两条不变量没法只看 shop.js 推出来 —— 死键就长在两张表的缝隙里。
+    FACTIONS:FACTIONS,
+    FACTION_ROLES:FACTION_ROLES,
+    factionOfRole:factionOfRole,
     createFeedbackQueue:createFeedbackQueue,
     VERSION:'1'
   };
