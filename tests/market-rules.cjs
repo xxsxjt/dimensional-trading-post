@@ -244,8 +244,28 @@ console.log('PASS a stockout restores the baseline when it ends instead of stick
     assert.ok(v >= 0.5 && v <= 3,
       'category "' + c + '" drifted to ' + v + ' after 400 days — the market must not ratchet');
   });
-  assert.equal(st.market.pendingShocks.length, 0,
-    'no shock may be left pending after the market settles');
+
+  /* 不能在这里断言 pendingShocks 为空。
+   * 冲击的 duration 是 2~7 天（见 wasteland-core.js 的随机事件），
+   * 所以第 400 天完全可能刚好落下一条新冲击 ——
+   * 它还在生效中，pendingShocks 当然非空。这不是缺陷，是时序事实。
+   *
+   * 真正要守的不变式是「所有冲击都结束后，系数精确回到基线」，
+   * 所以这里再推 10 天把冲击全部走完，然后查精确不变式。
+   */
+  for (let d=0; d<10; d++) s.endDay();
+
+  const settled = s.state();
+  assert.equal(settled.market.pendingShocks.length, 0,
+    'every shock must have expired after the drain window, still pending: ' +
+    JSON.stringify(settled.market.pendingShocks));
+  settled.market.coefficients && Object.keys(settled.market.coefficients).forEach(c => {
+    const v = settled.market.coefficients[c];
+    const base = settled.market.baselines ? settled.market.baselines[c] : undefined;
+    assert.ok(Math.abs(v - base) < 1e-9,
+      'category "' + c + '" must settle exactly on its baseline after every shock expires, ' +
+      'got ' + v + ' vs baseline ' + base);
+  });
 }
 console.log('PASS the market coefficients do not drift over 400 days of random play');
 

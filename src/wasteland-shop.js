@@ -1944,6 +1944,19 @@
   }
 
   // ── playerBid：拍卖出价 ───────────────────────────────────
+  /* 出价失败**也必须推进回合**。
+   *
+   * 以前这里是：
+   *   if (出价无效 || 资金不足) { 记事件; render(); return; }
+   * 而 `auc.round += 1` 写在这段 return 之后。
+   * 于是玩家一旦出不起下一轮的最低价（NPC 抬过价之后
+   * 最低价 = currentBid + minIncrement），每一次出价都被拒，
+   * round 永远停在同一轮 —— 拍卖**既不赢也不输**，
+   * 卡在界面上直到存档被写坏为止。退出重进照样卡死。
+   *
+   * 现在：出价失败视为「弃权」，照样推进回合。
+   * 玩家仍然不领先；回合推满 maxRounds 后拍卖照常结算。
+   * 这样拍卖永远有终点，而且不会凭空扣钱。 */
   function playerBid(amount) {
     var auc = state.auction;
     if (!auc || auc.done) return;
@@ -1951,50 +1964,161 @@
     var minNeeded = auc.currentBid + auc.minIncrement;
     if (isNaN(bid) || bid < minNeeded) {
       state.todayEvents.push(_makeEvent('bid_fail', '出价无效', '最低需要 ¤' + minNeeded + '。'));
+      _advanceAuctionRound();
+      Core.saveGame(state);
       render(); return;
     }
     if (bid > state.gold) {
       state.todayEvents.push(_makeEvent('bid_fail', '资金不足',
         '出价 ¤' + bid + ' 超过现有 ¤' + state.gold + '。'));
+      // 弃权也要推进回合，否则拍卖会永远停在这一轮。
+      _advanceAuctionRound();
+      Core.saveGame(state);
       render(); return;
     }
     auc.currentBid    = bid;
     auc.currentLeader = 'player';
+    _npcAuctionBid();
+    _advanceAuctionRound();
+    Core.saveGame(state);
+    render();
+  }
+
+  /* NPC 竞拍者抬价。
+   *
+   * NPC 只在玩家出价之后才抬价 —— 也就是说玩家不碰拍卖面板，
+   * 这局拍卖就永远停在 round=0，NPC 从来不举牌，
+   * 界面上的「回合 1/N」会一直挂着像进行中。
+   *
+   * 现在这段抽成独立函数：玩家出价时调它，
+   * 每日结算推进拍卖时也调它（见 _advanceAuctionDaily）。
+   * 于是这局拍卖无论玩家参不参与都会往前走、都会收场。 */
+  function _npcAuctionBid() {
+    var auc = state.auction;
+    if (!auc || auc.done) return;
     auc.competitors.forEach(function (npc) {
-      var aiMax = NPC.negotiatePrice(npc, { basePrice: auc.basePrice, type: 'auction' }, auc.basePrice);
+      var aiMax = NPC.negotiatePrice(npc, { basePrice: auc.basePrice, auctionBid: true }, auc.basePrice);
       if (typeof aiMax === 'number' && aiMax > auc.currentBid && Math.random() > 0.45) {
         auc.currentBid    = auc.currentBid + auc.minIncrement;
         auc.currentLeader = npc.name;
       }
     });
+  }
+
+  /* 每日推进拍卖：NPC 举牌 + 走一拍。
+   *
+   * 每周拍卖一开就是 maxRounds 拍。如果只有玩家点击才推进，
+   * 玩家不点，这局拍卖就永远悬着 —— 而且是**存进存档**的悬着，
+   * 退出重进还是悬着，界面一直显示「进行中」。
+   * 现在每天结算时推一拍，拍满就结账，拍卖永远有终点。 */
+  function _advanceAuctionDaily() {
+    var auc = state.auction;
+    if (!auc || auc.done) return;
+    _npcAuctionBid();
+    _advanceAuctionRound();
+  }
+
+  /* 推进一拍并按需结算。返回 true 表示这局拍卖已经结束。 */
+  function _advanceAuctionRound() {
+    var auc = state.auction;
+    if (!auc || auc.done) return false;
     auc.round += 1;
-    if (auc.round >= auc.maxRounds) {
-      auc.done      = true;
-      auc.playerWon = (auc.currentLeader === 'player');
-      if (auc.playerWon) {
+    if (auc.round < auc.maxRounds) return false;
+
+    auc.done      = true;
+    auc.playerWon = (auc.currentLeader === 'player');
+    if (auc.playerWon) {
+      // 奖池按档位取货，只在目录里挑（见 AUCTION_POOL 注释）。
+      var pool = AUCTION_POOL[auc.tier] || AUCTION_POOL.low;
+      var sku  = pool[Math.floor(Math.random() * pool.length)];
+      if (!Core.ITEM_CATALOG[sku]) sku = AUCTION_POOL.low[0];
+      // 品质要跟**实际成交价**挂钩，不能独立掷骰。
+      //
+      // 以前是 `quality: 2 + Math.floor(Math.random()*4)`（2~5 随机）。
+      // 但奖池里每一档都存在「品质 2 的货不值起拍价」的组合：
+      //   low  档起拍 ¤80，map_fragment 品质 2 只值 ¤48
+      //   mid  档起拍 ¤200，whisky_700 品质 2 只值 ¤100
+      //   high 档起拍 ¤500，cigar_box 品质 2 只值 ¤256
+      // 玩家花 ¤500 拍回一件 ¤256 的东西 —— 拍卖成了稳亏的坑。
+      //
+      // 现在按成交价反推品质：先算出「这档的基准价 × 成交价系数」
+      // 对应多少价值，再从奖池里挑一件**值这个价**的货。
+      // 挑不到够格的（奖池整体偏便宜）就退而求其次挑最贵的，
+      // 但仍保证拿到的货价值不低于成交价的一定比例。
+      var prize = _buildAuctionPrize(sku, auc.currentBid, auc.tier);
+      // 入库要扫**整个**仓库，不能只扫一部分格子。
+      //
+      // 以前这里写死了 `for (ar = 0; ar < 6) for (ac = 0; ac < 8)`，
+      // 而仓库实际是 10×8 —— 右边 2 列和下面 3 行**永远扫不到**。
+      // 于是仓库右边或下边还有空位时，多格物品照样放不进去，
+      // 玩家付了钱拍到的货直接蒸发（事件里还写着「仓库已满，货物丢失！」）。
+      // 现在改用 _placeInWarehouse —— 跟正常进货走同一套扫描逻辑。
+      var placed = _placeInWarehouse(prize);
+      if (placed) {
+        // 先入库，再扣钱。顺序反过来的话，玩家会「付了钱货却没了」。
         state.gold -= auc.currentBid;
-        // 奖池按档位取货，只在目录里挑（见 AUCTION_POOL 注释）。
-        var pool = AUCTION_POOL[auc.tier] || AUCTION_POOL.low;
-        var sku  = pool[Math.floor(Math.random() * pool.length)];
-        if (!Core.ITEM_CATALOG[sku]) sku = AUCTION_POOL.low[0];
-        var prize  = Core.createItem(sku, { quality: 2 + Math.floor(Math.random() * 4), origin:'auction' });
-        var placed = false;
-        for (var ar = 0; ar < 6 && !placed; ar++) {
-          for (var ac = 0; ac < 8 && !placed; ac++) {
-            if (Core.canPlace(state.grid, prize, ac, ar)) {
-              Core.place(state.grid, prize, ac, ar); placed = true;
-            }
-          }
-        }
         state.todayEvents.push(_makeEvent('auction_won', '拍卖成功',
-          '花费 ¤' + auc.currentBid + ' 拍得维度货箱。' + (placed ? '货物已入库。' : '仓库已满，货物丢失！')));
+          '花费 ¤' + auc.currentBid + ' 拍得维度货箱，货物已入库。'));
       } else {
-        state.todayEvents.push(_makeEvent('auction_lost', '拍卖结束',
-          '最终成交 ¤' + auc.currentBid + '，由 ' + auc.currentLeader + ' 拍得。'));
+        // 仓库放不下 —— **不扣钱**。
+        // 以前是先扣钱再入库，货没了钱也没了：玩家白白损失 ¤500，
+        // 而仓库明明还有空格子，只是没有一块连着的空地放得下这个大件。
+        // 现在改成「送不进去就不成交」，钱不动，货退回给卖家。
+        state.todayEvents.push(_makeEvent('auction_refused', '拍卖未成交',
+          '仓库放不下这个货箱，本次不成交，¤' + auc.currentBid + ' 未扣除。' +
+          '清出几格仓库空间再拍。'));
+      }
+    } else {
+      state.todayEvents.push(_makeEvent('auction_lost', '拍卖结束',
+        '最终成交 ¤' + auc.currentBid + '，由 ' + (auc.currentLeader || '其他竞拍者') + ' 拍得。'));
+    }
+    return true;
+  }
+
+  /* 拍卖成交后配货。
+   *
+   * 契约：拿到的货，**市场价值不得低于成交价**。
+   * 做不到（奖池整体太便宜、或者玩家抬价抬过了头）时，
+   * 退而取次优，但至少保证价值不低于成交价 ——
+   * 拍卖最坏是「买贵了」，而不是「花大钱买回废铁」。
+   *
+   * 做法：
+   *   1. 在奖池里枚举每件货 × 每个品质，算出市场价值；
+   *   2. 优先挑价值 ≥ 成交价的组合里**随机**一个（保留惊喜感）；
+   *   3. 一个都没有就挑价值最高的组合。
+   *
+   * 市场价格一律走 Core.computePrice —— 与界面显示、库存估值
+   * 用的是同一个函数，不会出现「界面说值多少、实际算另一个数」。
+   */
+  function _buildAuctionPrize(fallbackSku, paid, tier) {
+    var pool = AUCTION_POOL[tier] || AUCTION_POOL.low;
+    var market = state.market;
+    var best = null, bestVal = -1;
+    var affordable = [];
+
+    for (var pi = 0; pi < pool.length; pi++) {
+      var sku = pool[pi];
+      if (!Core.ITEM_CATALOG[sku]) continue;
+      for (var q = 2; q <= 5; q++) {
+        var item;
+        try { item = Core.createItem(sku, { quality: q, origin: 'auction' }); }
+        catch (e) { continue; }
+        var val = Core.computePrice(market, item);
+        if (val >= paid) {
+          affordable.push({ item: item, value: val });
+        }
+        if (val > bestVal) { bestVal = val; best = item; }
       }
     }
-    Core.saveGame(state);
-    render();
+    if (affordable.length) {
+      var pick = affordable[Math.floor(Math.random() * affordable.length)];
+      return pick.item;
+    }
+    // 奖池里没有一件货值这个价 —— 取最贵的，别让玩家空手。
+    if (best) return best;
+    // 兜底：奖池全空或目录对不上
+    var fb = Core.ITEM_CATALOG[fallbackSku] ? fallbackSku : AUCTION_POOL.low[0];
+    return Core.createItem(fb, { quality: 3, origin: 'auction' });
   }
 
   // ── endDay ────────────────────────────────────────────────
@@ -2044,6 +2168,11 @@
       var evType = (typeof ev === 'object' && ev.type === 'market') ? 'market' : 'system';
       state.todayEvents.push(_makeEvent(evType, evType === 'market' ? '行情通知' : '系统消息', text));
     });
+    // 3b. 拍卖每日推进一拍（NPC 自己也会举牌）。
+    // 这一步必须在下面「周结算开新拍卖」**之前**：
+    // 这样开新拍卖的那一天，新局从第 0 拍开始，享有完整回合预算；
+    // 而上一局（本周剩下的那局）在今天先走完它该走的一拍。
+    _advanceAuctionDaily();
     // 4. 周结算（day%7===1 且非第1天）
     if (state.day > 1 && (state.day - 1) % 7 === 0) {
       state.week += 1;

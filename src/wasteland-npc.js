@@ -301,6 +301,46 @@
     var tags=npc.tags||[];
     var price=basePrice;
 
+    // 拍卖语境：竞拍者要的是「愿意出多高」，跟柜台议价的「愿意出多低」相反。
+    //
+    // 以前这里完全没看拍卖标记，拍卖传进来的描述对象里的标记被丢掉，
+    // 于是拍卖沿用了柜台那一套**压价**系数：
+    //   谨慎 ×0.6~0.85、拾荒者 ×0.5~0.8、批发买家 ×0.7~0.85
+    // 结果竞拍者的「意愿价」永远**低于起拍价**，
+    // 条件 `aiMax > auc.currentBid` 永远不成立 —— NPC 一次都举不了牌。
+    // 实测 high 档（起拍 ¤500）两位竞拍者的意愿价只有 ¤293 / ¤419，
+    // 30 局里有 21 局没有任何 NPC 出过价。
+    //
+    // 现在拍卖走独立的一套：竞价有竞争性，意愿价要高于起拍价，
+    // 但仍然受资金上限和「拒绝类标签」约束。
+    //
+    // 标记用专门的 `auctionBid` 字段，而不是复用 `type`：
+    // `type` 在这个项目里是「物品类别」的意思（对应目录的 category/subtype），
+    // 借用它来表达「这是竞价语境」会让静态审计把这条分支误判成不可达
+    // （目录里确实没有 type === 'auction' 的物品，因为拍卖传的本来就不是物品）。
+    if(item&&item.auctionBid){
+      var bid=basePrice;
+      if(tags.indexOf('急于购买')!==-1)bid*=rand(1.15,1.45);
+      if(tags.indexOf('冲动')!==-1)bid*=rand(1.05,1.35);
+      if(tags.indexOf('嗜酒')!==-1&&_isAlcohol(item))bid*=rand(1.2,1.6);
+      if(tags.indexOf('黑市商人')!==-1&&_isContraband(item))bid*=rand(1.2,1.5);
+      if(tags.indexOf('医疗工作者')!==-1&&_isMedicine(item))bid*=rand(1.05,1.25);
+      // 清醒主义者对酒拒绝；执法人员拒绝违禁品
+      if(tags.indexOf('清醒主义者')!==-1&&_isAlcohol(item))return 0;
+      if(tags.indexOf('执法人员')!==-1&&_isContraband(item))return 0;
+      // 谨慎与拾荒者在拍卖上也会举牌，只是抬得少
+      if(tags.indexOf('谨慎')!==-1)bid*=rand(0.95,1.1);
+      if(tags.indexOf('拾荒者')!==-1)bid*=rand(0.9,1.05);
+      if(tags.indexOf('批发买家')!==-1)bid*=rand(0.95,1.1);
+      // 至少要比起拍价高一点，否则还是举不了牌
+      if(bid<=basePrice)bid=basePrice*rand(1.02,1.12);
+      if (typeof npc.funds === 'number' && isFinite(npc.funds)) {
+        bid = Math.min(bid, npc.funds);
+      }
+      if (!isFinite(bid) || bid < 0) bid = 0;
+      return Math.floor(bid);
+    }
+
     // 急于购买：接受高价
     if(tags.indexOf('急于购买')!==-1)price*=rand(1.0,1.3);
     // 谨慎：压价
