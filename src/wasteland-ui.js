@@ -1176,6 +1176,16 @@
       var def = (window.WastelandCore && window.WastelandCore.machineDef)
         ? window.WastelandCore.machineDef(m.machineKey) : null;
       var ids = (def && def.recipes) || [];
+      /* 别界的机器：只留一条说明，不列配方。
+       * 换了界以后，别的界买的机器还摆在机器区上（机器是玩家自己的资产，
+       * 不该凭空消失），但它开不了工 —— 列着配方只会让人点了吃一句「这里做不了」。
+       * 把话说清楚，机器区不会显得像坏了。 */
+      if (m.foreign) {
+        card.appendChild(el('p', {class:'wl-machine__foreign'}, m.foreignLabel || '别界的手艺，本界开不了工'));
+        card.appendChild(list);
+        container.appendChild(card);
+        return;
+      }
       ids.forEach(function (rid) {
         var recipe = recipes[rid];
         if (!recipe) return;

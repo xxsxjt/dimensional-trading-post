@@ -234,6 +234,7 @@ const TEST_SUITES = [
   ['npc', 'tests/npc-rules.cjs'],
   ['faction', 'tests/faction-rules.cjs'],
   ['world-switch', 'tests/world-switch-rules.cjs'],
+  ['machine-world', 'tests/machine-world-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -260,6 +261,8 @@ ok('分阵营声望回归文件存在', existsSync(resolve(root, 'tests/faction-
 ok('分阵营声望变异测试文件存在', existsSync(resolve(root, 'tests/faction-mutation.cjs')));
 ok('换界回归文件存在', existsSync(resolve(root, 'tests/world-switch-rules.cjs')));
 ok('换界变异测试文件存在', existsSync(resolve(root, 'tests/world-switch-mutation.cjs')));
+ok('机器世界归属回归文件存在', existsSync(resolve(root, 'tests/machine-world-rules.cjs')));
+ok('机器世界归属变异测试文件存在', existsSync(resolve(root, 'tests/machine-world-mutation.cjs')));
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
@@ -447,6 +450,64 @@ ok('A3-4 槽位渲染抽成模块级函数（避免两处走偏）',
 ok('A3-4 槽位渲染带上全局下标偏移（切片后不能错位）',
   /_counterSlots\s*\(\s*slots\.slice\(start,\s*end\)\s*,\s*cb\s*,\s*start\s*\)/.test(ui),
   '切片渲染必须把 offset 传下去，否则 data-slot 和拖放下标会错位');
+
+/* 6b-5. 机器世界归属这一轮修的几处（缺陷 A5）。
+ *
+ * A5-1 机器对象必须带着自己的世界归属
+ *    createMachine 以前根本不写 world 字段，
+ *    于是「在宗门界买的丹炉」换到核爆废土照样能开丹方。
+ *
+ * A5-2 开工这一刻必须再查一次世界
+ *    买的时候查过一遍不够 —— 机器是玩家自己的资产，它跟着玩家换界。
+ *
+ * A5-3 老存档没有 world 字段时要按机器类型反查
+ *    直接当成「通用机器」会把老玩家的产线放到另一界去，
+ *    世界约束对旧档等于不存在。
+ *
+ * A5-4 UI 必须把别界的机器标出来
+ *    机器是玩家自己的资产，不该凭空消失；但也不能列着配方让人白点。
+ *
+ * A5-5 拒绝开工时必须给玩家一句人话
+ *    静默失败会让人以为机器坏了。
+ */
+const createMachineBody = (() => {
+  const i = core.indexOf('function createMachine');
+  return i >= 0 ? stripComments(core.slice(i, i + 700)) : '';
+})();
+const startProductionBody = (() => {
+  const i = shop.indexOf('function startProduction');
+  return i >= 0 ? stripComments(shop.slice(i, i + 2600)) : '';
+})();
+ok('A5-1 createMachine 把 world 落到机器对象上',
+  /world\s*:\s*def\.world\s*\|\|\s*null/.test(createMachineBody),
+  '机器必须记住自己属于哪一界');
+ok('A5-2 开工时按机器的世界做校验',
+  /machineWorld\s*&&\s*machineWorld\s*!==\s*_currentWorld\(\)/.test(startProductionBody));
+ok('A5-2 校验发生在扣料之前',
+  startProductionBody.indexOf('machineWorld !== _currentWorld()') >= 0 &&
+  startProductionBody.indexOf('machineWorld !== _currentWorld()') <
+    startProductionBody.indexOf('_consumeFromWarehouse'));
+ok('A5-3 老存档缺 world 时按机器类型反查',
+  /machine\.world[\s\S]{0,300}?Core\.machineDef\(machine\.machineKey\)/.test(startProductionBody),
+  '旧档不能被当成通用机器');
+ok('A5-4 机器面板标出别界的机器',
+  /foreign\s*:\s*foreign/.test(shopCode) && /foreign\s*=\s*!!\(machineWorld\s*&&\s*machineWorld\s*!==\s*worldId\)/.test(shopCode));
+ok('A5-4 别界的机器不列配方（UI 提前拦住）',
+  /if\s*\(m\.foreign\)\s*\{[\s\S]{0,400}?return;/.test(ui),
+  'UI 应当只留一条说明，不列配方');
+ok('A5-5 拒绝开工时给出可读提示',
+  /produce_fail[\s\S]{0,200}?'这里做不了'/.test(startProductionBody),
+  '静默拒绝会让人以为机器坏了');
+ok('A5-5 提示里点明机器来自哪一界',
+  /灵霄宗门界/.test(startProductionBody) && /核爆废土/.test(startProductionBody));
+ok('A5-1 六台机器都声明了自己的世界',
+  Object.keys(Core.MACHINE_DEFS || {}).length === 6 &&
+    Object.values(Core.MACHINE_DEFS || {}).every(d => !!d.world),
+  '机器定义里必须有 world 字段，否则约束无从谈起');
+ok('A5-1 新建的机器都带着世界归属',
+  Core.createMachine('smelter').world === 'wasteland_nuclear' &&
+    Core.createMachine('alchemy_furnace').world === 'xianxia_sect',
+  'createMachine 必须把 world 落到实例上');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

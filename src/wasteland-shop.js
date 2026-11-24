@@ -1145,6 +1145,25 @@
       render();
       return;
     }
+    /* 机器的「世界归属」要在**开工这一刻**再查一遍。
+     * 买机器的时候查过一遍不够 —— 那时查的是「此刻在哪一界」，
+     * 而机器会跟着玩家换界：宗门界买的丹炉到了核爆废土照样能开丹方，
+     * 废土的熔炉在宗门界也能熔铁。世界约束对已购物品完全失效。
+     *
+     * 老存档的机器没有 world 字段 —— 那种情况下按机器类型反查定义，
+     * 查不到就当作通用机器（不拦），宁可放过也不拦死老玩家的产线。 */
+    var machineWorld = machine.world;
+    if (machineWorld === undefined || machineWorld === null) {
+      var mdef = Core.machineDef(machine.machineKey);
+      machineWorld = mdef ? (mdef.world || null) : null;
+    }
+    if (machineWorld && machineWorld !== _currentWorld()) {
+      state.todayEvents.push(_makeEvent('produce_fail', '这里做不了',
+        machine.name + '是' + (machineWorld === 'xianxia_sect' ? '灵霄宗门界' : '核爆废土') +
+        '的手艺，今天在' + _worldLabel(_currentWorld()) + '开不了工。'));
+      render();
+      return;
+    }
     if (!_powerOnline()) {
       state.todayEvents.push(_makeEvent('produce_fail', '没有电',
         '机器要通电才能开工。先给电力设施加燃料。'));
@@ -2933,6 +2952,19 @@
       var job = (state.production || []).filter(function (j) {
         return j && j.machineId === machine.id;
       })[0] || null;
+      /* 这台机器是不是「本界的手艺」。
+       * 换界之后，别的界买的机器还留在机器区上 ——
+       * UI 必须把它标出来，而且**不列它的配方**，
+       * 否则玩家点了「开工」只会收到一句「这里做不了」。
+       *
+       * 老存档的机器没有 world 字段：按机器类型反查定义，
+       * 查不到就当作通用机器。 */
+      var machineWorld = machine.world;
+      if (machineWorld === undefined || machineWorld === null) {
+        var mdef = Core.machineDef(machine.machineKey);
+        machineWorld = mdef ? (mdef.world || null) : null;
+      }
+      var foreign = !!(machineWorld && machineWorld !== worldId);
       return {
         id:         machine.id,
         machineKey: machine.machineKey,
@@ -2941,6 +2973,10 @@
         w:          machine.w,
         h:          machine.h,
         level:      machine.level || 1,
+        foreign:    foreign,
+        foreignLabel: foreign
+          ? (machineWorld === 'xianxia_sect' ? '灵霄宗门界' : '核爆废土') + '的手艺，本界开不了工'
+          : '',
         running:    job ? { recipeId: job.recipeId, daysLeft: job.daysLeft, totalDays: job.totalDays } : null
       };
     });

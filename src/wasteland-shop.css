@@ -889,6 +889,9 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-machine__title b { display: block; font-size: 12px; color: #e1e9ed; }
 .wl-machine__title small { display: block; margin-top: 2px; font-size: 10px; color: var(--wl-muted); }
 .wl-machine__busy { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--wl-amber); border-radius: 3px; font-size: 10px; color: var(--wl-amber); }
+/* 别界的手艺：换界之后别人的机器还摆在这儿，但本界开不了工。
+   机器是玩家自己的资产，不能凭空消失 —— 所以留一条说明，不列配方。 */
+.wl-machine__foreign { margin-top: 9px; padding: 6px 8px; border: 1px dashed var(--wl-rule); border-radius: 3px; font-size: 10px; line-height: 1.5; color: var(--wl-muted); }
 .wl-machine__recipes { margin-top: 9px; }
 .wl-machine__recipe { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
 .wl-machine__recipe-label { flex: 1 1 auto; min-width: 0; }
