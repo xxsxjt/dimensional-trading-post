@@ -6,7 +6,7 @@
 基线提交：`868c372 fix: 移除误加的 game/ 嵌套仓库引用`
 状态：**已修复 —— error=0 warn=0**
 
-审计覆盖 19 个维度：目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS）。
+审计覆盖 20 个维度：目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、换界柜台守恒、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS）。
 
 ---
 
@@ -16,9 +16,9 @@
 | --- | --- |
 | ERROR | 0 |
 | WARN | 0 |
-| 通过（无告警） | 目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS） |
+| 通过（无告警） | 目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、换界柜台守恒、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS） |
 
-  自动化测试 `npm test` **72 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **120 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **80 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 换界回归 8 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **129 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -773,17 +773,137 @@ UI 上照常渲染四个 0，玩家看不出它坏了 —— 这正是最坏的�
 
 ---
 
+## 四之八、换界（转场）：柜台上压着的货会变成看不见的无主之物（本轮新增）
+
+### 缺陷 A3：转场之后，那批货既不在仓库、也不在柜台、也不在事件里
+
+`chooseWorld()` 里清理柜台的代码是**有条件**的：
+
+```javascript
+state.worldId    = worldId;
+state.worldPlace = _rollPlace(worldId);
+// 换世界等于换客源：当天商旅重新生成，之前的洽谈作废
+if (state.counterState && state.counterState.npcId) _returnCounterItems();
+if (state.counterState) {
+  state.counterState.npcId = null;
+  state.counterState.npc   = null;
+  state.counterState.phase = 'idle';
+  state.counterState.offer = null;
+}
+```
+
+**条件挂在 `npcId` 上，而下面紧接着就把 `npcId` 清成 `null`。**
+
+于是「槽位里有货但 `npcId` 是空」的那批货落进一个四面漏水的洞：
+
+| 它在哪 | 谁看得到 | 结果 |
+| --- | --- | --- |
+| 仓库 | 玩家 | 不在 —— 没退回 |
+| 柜台 | UI | 不在 —— `renderCounter` 提前 return，一个槽位都不画 |
+| 事件日志 | 玩家 | 不在 —— 换界事件只说「今天来的都是这一界的客人」 |
+| 成交范围 | — | 不在 —— 没有商旅，卖不掉 |
+
+唯一能让它回来的入口是 `handleCounterReturn`，而那个按钮**根本没有被渲染出来**。
+
+补上 `endDay()` 里早就修好的那一条（结算时的柜台清退是无条件的），
+`chooseWorld()` 这一处当年没跟上 —— 同一个漏洞，两个入口。
+
+`renderCounter()` 那一段 early-return 尤其关键：
+
+```javascript
+if (!s.npcId || s.phase === 'idle') {
+  var idle = el('div', {class:'wl-counter-empty'});
+  idle.appendChild(el('span', {'aria-hidden':'true'}, '◇'));
+  idle.appendChild(el('p', {}, '先接待一位商旅，再点击仓库货物上柜台。'));
+  container.appendChild(idle);
+  return;   // ← 槽位一个都不画
+}
+```
+
+### 探针实测（`tests/probe-world2.cjs`）
+
+```
+换界前物品总数= 81   仓库= 80  柜台= 1
+换界后 worldId = xianxia_sect
+  仓库= 80  柜台= 1
+  counterState.npcId = null  phase = idle
+  事件： [ { type: "world_switch", ... } ]     ← 只有转场事件，没有一句提到那件货
+```
+
+货没消失（`_counterItems` 里它还在），但**玩家完全不知道它存在**。
+
+### 修法
+
+1. **`chooseWorld` 无条件归还柜台货物**，跟 `endDay` 对齐：
+
+   ```javascript
+   var strandedBefore = (state.counterState && state.counterState.slots || []).filter(Boolean).length;
+   _returnCounterItems();
+   ```
+
+   仓库放不下的那几件会留在柜台上 —— 但**必须明确告诉玩家**：
+
+   ```javascript
+   if (stranded > 0) {
+     state.todayEvents.push(_makeEvent('counter_full', '仓库放不下，货留在柜台上',
+       '转场前有 ' + stranded + ' 件货收不回仓库（' + (strandedBefore - stranded) +
+       ' 件已退回），它们还在柜台上。先整理仓库再取回。'));
+   }
+   ```
+
+2. **`handleCounterReturn` 按 `npcId` 决定 phase**：
+
+   ```javascript
+   cs.phase = cs.npcId ? 'active' : 'idle';
+   ```
+
+   没有商旅时回到 `idle`，别让柜台显示成「正在谈一笔没有对手的生意」。
+
+3. **UI 在「没有商旅但柜台压着货」时也要画槽位**。
+   把槽位渲染抽成模块级 `_counterSlots(slots, cb, offset)`，
+   idle 分支复用它 —— 附带好处：切片渲染时必须把 `offset` 传下去，
+   否则 `data-slot` 和拖放的下标会错位。
+
+### 回归测试
+
+`tests/world-switch-rules.cjs`（8 项）与 `tests/world-switch-mutation.cjs`（**7/7 变异全被抓住**）：
+
+| 断言 | 结果 |
+| --- | --- |
+| 换界永远不销毁货物，滞留的必须在事件日志里有交代 | 通过 |
+| 仓库有空位时，换界必须把货**真的退回仓库**（柜台清空、仓库 +1） | 通过 |
+| 换界后柜台上压着的货，UI 必须渲染出那个槽位 | 通过 |
+| 取回最后一件货后回到 `idle`，而不是假装有商旅 | 通过 |
+| 换界必须重新生成商旅池，且商旅都来自新世界 | 通过 |
+| 换界后锁死世界：再换被拒，且**不重掷**商旅 | 通过 |
+| 没开张时可以换界 | 通过 |
+| 结算之后世界重新解锁 | 通过 |
+
+变异验证覆盖 7 个单点注回：换界时改回「按 npcId 有条件归还」、换界完全不清理柜台、
+换界不告知滞留的货、取回后无条件 `phase='active'`、UI 不渲染槽位、换界不锁死世界、
+换界不重新生成商旅 —— **全部报红**。
+
+> 这条缺陷和上一轮的 A2 是同一个形状：
+> **一块看起来接好了、实际从没通电的数据。**
+> A2 是声望的写入条件判假，A3 是柜台清退的条件判假。
+> 两处都是「条件成立就干活」，条件不成立时**静默跳过**，没有任何告警。
+> 修这类东西，光看「有没有调用」不够，要看**条件本身对不对**。
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（120 项）
-npm test             # 回归测试：72 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（129 项）
+npm test             # 回归测试：80 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 换界回归 8 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
 npm run test:npc      # 只跑 NPC 判定回归：8 项（鉴定/后果/声望/报价/延迟反馈/退化随机源/队列与存档绑定）
 npm run test:faction  # 只跑分阵营声望回归：8 项（结构对齐/成交记账/键不存在也写/老档商旅/多阵营扩散/存档迁移/自愈/每日商旅）
 npm run test:faction:mutation # 分阵营声望变异验证：把 7 个缺陷逐个注回源码，确认回归测试全部失败（7/7）
+npm run test:world   # 只跑换界回归：8 项（不销毁货物/退回仓库/UI 可见/取回后回 idle/商旅重掷/锁死/开局可换/结算解锁）
+npm run test:world:mutation # 换界变异验证：把 7 个缺陷逐个注回源码，确认回归测试全部失败（7/7）
 npm run test:market   # 只跑行情系数回归：6 项（冲击只加一次/叠加相加/断供复原/长期不漂移/跨存档）
 npm run test:auction  # 只跑拍卖规则回归：6 项（轮次推进/自走结算/NPC 竞价/价值匹配/放不下不扣钱/边角入库）
 npm run test:auction:mutation # 拍卖变异验证：把 6 个缺陷逐个注回源码，确认回归测试全部失败（6/6）
@@ -831,6 +951,7 @@ npm run build        # 构建
 - **NPC 标签系统**：日循环 NPC 与 `evaluateTrade` 的标签口径打通
 - **NPC 判定键对齐**：酒 / 药品 / 违禁品分支全部可达
 - **分阵营声望对齐**：阵营表与角色映射表结构对齐，无死键、无死写入
+- **换界柜台守恒**：换界不销毁货物；退不回去的货必须在事件日志里有交代，且 UI 必须看得见
 - **死代码**：W10 / W11 已落成真功能，无孤立导出
 - **过期机制**：仓库与柜台两条路径都结算 `expiryDays`
 - **纯度系统**：目录 30 项带纯度系统

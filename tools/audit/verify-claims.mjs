@@ -1,4 +1,4 @@
-// 交叉校验脚本：核对 AUDIT.md 的结论与数字是否与源码/真实求值一致。
+﻿// 交叉校验脚本：核对 AUDIT.md 的结论与数字是否与源码/真实求值一致。
 // 用法：node tools/audit/verify-claims.mjs
 // 退出码：0 = 全部一致；1 = 有不一致
 //
@@ -204,14 +204,17 @@ ok('工具 汇总 error=0 warn=0', tSummary && Number(tSummary[1]) === 0 && Numb
 ok('工具 以退出码 0 结束（无 error）', run.status === 0, 'status=' + run.status);
 
 /* 6. 通过维度数
- * 不写死数字 —— 维度清单每轮都在变（这一轮加了「分阵营声望对齐」），
- * 写死 18 的话，改了清单忘了改这里就会报一个假红。
+ * 不写死数字 —— 维度清单每轮都在变（这一轮加了「分阵营声望对齐」，
+ * 后来又加了「换界柜台守恒」），写死的话改了清单忘了改这里就会报一个假红。
  * 改成跟「审计覆盖 N 个维度」那句对账：两处清单必须是同一批维度。 */
 const reportedPass = report.match(/\| 通过（无告警） \| ([^|]+) \|/);
 const passItems = reportedPass ? reportedPass[1].split('、').map(s => s.trim()).filter(Boolean) : [];
 const coverLine = report.match(/审计覆盖 (\d+) 个维度：(.+?)。/);
 const coverItems = coverLine ? coverLine[2].split('、').map(s => s.trim()).filter(Boolean) : [];
-ok('报告列出 18 个通过维度', reportedPass && passItems.length === 19, reportedPass ? 'n=' + passItems.length : 'n/a');
+const claimedCover = coverLine ? Number(coverLine[1]) : NaN;
+ok('报告声明的维度数与维度清单条数一致',
+  coverLine && coverItems.length === claimedCover,
+  '声明=' + claimedCover + ' 清单=' + coverItems.length);
 ok('结论表与维度清单列出的是同一批维度',
   coverItems.length > 0 && passItems.length === coverItems.length &&
   coverItems.every(d => passItems.some(p => p.replace(/（.*?）/g, '') === d.replace(/（.*?）/g, '') || p.includes(d) || d.includes(p))),
@@ -230,6 +233,7 @@ const TEST_SUITES = [
   ['soak', 'tests/soak.cjs'],
   ['npc', 'tests/npc-rules.cjs'],
   ['faction', 'tests/faction-rules.cjs'],
+  ['world-switch', 'tests/world-switch-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -254,6 +258,8 @@ ok('多日推演文件存在', existsSync(resolve(root, 'tests/soak.cjs')));
 ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs')));
 ok('分阵营声望回归文件存在', existsSync(resolve(root, 'tests/faction-rules.cjs')));
 ok('分阵营声望变异测试文件存在', existsSync(resolve(root, 'tests/faction-mutation.cjs')));
+ok('换界回归文件存在', existsSync(resolve(root, 'tests/world-switch-rules.cjs')));
+ok('换界变异测试文件存在', existsSync(resolve(root, 'tests/world-switch-mutation.cjs')));
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
@@ -399,6 +405,48 @@ ok('A2-4 applyEffect 自愈缺失或损坏的 factions 对象',
   /if\s*\(!rep\.factions\|\|typeof rep\.factions\s*!==\s*'object'\)\s*rep\.factions\s*=\s*\{\};/.test(npcCode));
 ok('A2-5 存档迁移补齐缺失的阵营键',
   /NPC\.FACTIONS[\s\S]{0,400}?state\.reputation\.factions\[f\]\s*=\s*0/.test(shopCode));
+
+/* 6b-4. 换界（转场）这一轮修的几处（缺陷 A3）。
+ *
+ * A3-1 chooseWorld 必须无条件归还柜台上的货
+ *    原来的写法是 `if (state.counterState.npcId) _returnCounterItems();`，
+ *    而紧接着下面就把 npcId 清成 null ——
+ *    于是「洽谈已作废、货还压在柜台上」的那批货永远退不回仓库。
+ *
+ * A3-2 退不回去的货必须明确告诉玩家
+ *    仓库满了就只能留在柜台上，但事件日志必须说清楚，
+ *    否则玩家只看到柜台上多了一件不知道哪来的货。
+ *
+ * A3-3 取回最后一件货后 phase 要按 npcId 决定
+ *    没有商旅时回到 idle，别让柜台显示成「正在谈一笔没有对手的生意」。
+ *
+ * A3-4 UI 在「没有商旅但柜台有货」时也必须渲染槽位
+ *    renderCounter 原来在 !npcId || phase==='idle' 时直接 early-return，
+ *    那批货既不在仓库（玩家看不见）也不在柜台（UI 不画）——
+ *    玩家完全不知道它存在。
+ */
+const chooseBody = (() => {
+  const i = shop.indexOf('function chooseWorld');
+  return i >= 0 ? stripComments(shop.slice(i, i + 2200)) : '';
+})();
+ok('A3-1 换界时无条件归还柜台货物',
+  /_returnCounterItems\(\);/.test(chooseBody) &&
+  !/if\s*\(\s*state\.counterState\s*&&\s*state\.counterState\.npcId\s*\)\s*_returnCounterItems\(\)/.test(chooseBody),
+  '换界时的柜台清理不能按 npcId 有条件执行');
+ok('A3-1 换界时统计滞留数量',
+  /strandedBefore[\s\S]{0,600}?stranded/.test(chooseBody));
+ok('A3-2 退不回去的货在事件日志里留痕',
+  /stranded\s*>\s*0[\s\S]{0,300}?_makeEvent\(\s*'counter_full'/.test(chooseBody));
+ok('A3-3 取回最后一件货后 phase 按 npcId 决定',
+  /cs\.phase\s*=\s*cs\.npcId\s*\?\s*'active'\s*:\s*'idle'/.test(shopCode));
+ok('A3-4 UI 在没有商旅但柜台有货时也渲染槽位',
+  /noNpc[\s\S]{0,700}?heldSlots\.length[\s\S]{0,300}?_counterSlots\(/.test(ui),
+  '柜台没有商旅但压着货时，UI 必须把槽位画出来');
+ok('A3-4 槽位渲染抽成模块级函数（避免两处走偏）',
+  /function\s+_counterSlots\s*\(/.test(ui));
+ok('A3-4 槽位渲染带上全局下标偏移（切片后不能错位）',
+  /_counterSlots\s*\(\s*slots\.slice\(start,\s*end\)\s*,\s*cb\s*,\s*start\s*\)/.test(ui),
+  '切片渲染必须把 offset 传下去，否则 data-slot 和拖放下标会错位');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

@@ -264,16 +264,58 @@
     if (restoreTarget && restoreTarget.focus) restoreTarget.focus();
   }
 
+  /* 柜台槽位的渲染。抽成模块级函数有两个原因：
+   *   1. 「没有商旅但柜台上压着货」那一条分支也要渲染槽位 ——
+   *      以前它被 early-return 挡在门外，那批货玩家根本看不见。
+   *   2. 避免同一份槽位渲染逻辑写两遍，两边迟早会走偏。
+   *
+   * offset：这一段在完整 slots 数组里的起始下标。
+   * 必须传 —— data-slot 和 onSlotDrop 用的都是**全局**下标，
+   * 切片之后如果忘了补回来，拖放就会把货放进错误的槽位。 */
+  function _counterSlots(slots, cb, offset) {
+    var base = offset || 0;
+    var grid = el('div', {class:'wl-counter-slots'});
+    for (var index = 0; index < slots.length; index++) {
+      (function (slotIdx) {
+        var item = slots[slotIdx];
+        var globalIdx = base + slotIdx;
+        var slot = el('button', {type:'button',class:'wl-counter-slot' + (item ? ' wl-counter-slot--filled' : ''),'data-slot':globalIdx,'aria-label':item ? '取回 ' + item.name : '空柜台位 ' + (globalIdx + 1)});
+        slot.appendChild(iconNode(item ? item.icon : '', item ? typeConf(item.type).icon : '+', 'wl-counter-icon'));
+        if (item) slot.appendChild(el('small', {}, item.name || '货物'));
+        on(slot, 'click', function () { if (item && cb.onRemoveFromSlot) cb.onRemoveFromSlot(globalIdx); });
+        on(slot, 'dragover', function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; slot.classList.add('wl-counter-slot--dragover'); });
+        on(slot, 'dragleave', function () { slot.classList.remove('wl-counter-slot--dragover'); });
+        on(slot, 'drop', function (e) { e.preventDefault(); slot.classList.remove('wl-counter-slot--dragover'); if (cb.onSlotDrop) cb.onSlotDrop({itemId:e.dataTransfer.getData('text/plain'),slotIdx:globalIdx}); });
+        grid.appendChild(slot);
+      }(index));
+    }
+    return grid;
+  }
+
   function renderCounter(container, counterState, callbacks) {
     var s = counterState || {}, npc = s.npc || {}, slots = s.slots || [], cb = callbacks || {};
     container.innerHTML = '';
     container.style.cssText = '';
     container.className = 'wl-counter-panel';
     container.appendChild(el('h2', {class:'wl-trade-title'}, '交易柜台'));
-    if (!s.npcId || s.phase === 'idle') {
+    /* 柜台上还压着货，但没有商旅 —— 这批货必须看得见、点得回。
+     * 以前这里只要 npcId 是空或者 phase 是 idle 就直接 return，
+     * 于是「换界时仓库放不下、货留在柜台上」那批货
+     * 既看不见也点不到 —— 玩家完全不知道它们的存在。
+     * 现在先把它们渲染出来（附取回按钮），再显示「先接待商旅」的提示。 */
+    var heldSlots = slots.filter(Boolean);
+    var noNpc = !s.npcId || s.phase === 'idle';
+    if (noNpc) {
+      if (heldSlots.length) {
+        container.appendChild(el('p', {class:'wl-counter-hint'},
+          '柜台上还压着 ' + heldSlots.length + ' 件货（暂无商旅）。点击货物可取回仓库。'));
+        container.appendChild(_counterSlots(slots, cb));
+      }
       var idle = el('div', {class:'wl-counter-empty'});
       idle.appendChild(el('span', {'aria-hidden':'true'}, '◇'));
-      idle.appendChild(el('p', {}, '先接待一位商旅，再点击仓库货物上柜台。'));
+      idle.appendChild(el('p', {}, heldSlots.length
+        ? '先取回柜台上压着的货，或者接待一位商旅继续谈。'
+        : '先接待一位商旅，再点击仓库货物上柜台。'));
       container.appendChild(idle);
       return;
     }
@@ -333,21 +375,7 @@
       container.appendChild(shelf);
     }
     function renderSlots(start, end) {
-      var grid = el('div', {class:'wl-counter-slots'});
-      for (var index = start; index < end; index++) {
-        (function (slotIdx) {
-          var item = slots[slotIdx];
-          var slot = el('button', {type:'button',class:'wl-counter-slot' + (item ? ' wl-counter-slot--filled' : ''),'data-slot':slotIdx,'aria-label':item ? '取回 ' + item.name : '空柜台位 ' + (slotIdx + 1)});
-          slot.appendChild(iconNode(item ? item.icon : '', item ? typeConf(item.type).icon : '+', 'wl-counter-icon'));
-          if (item) slot.appendChild(el('small', {}, item.name || '货物'));
-          on(slot, 'click', function () { if (item && cb.onRemoveFromSlot) cb.onRemoveFromSlot(slotIdx); });
-          on(slot, 'dragover', function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; slot.classList.add('wl-counter-slot--dragover'); });
-          on(slot, 'dragleave', function () { slot.classList.remove('wl-counter-slot--dragover'); });
-          on(slot, 'drop', function (e) { e.preventDefault(); slot.classList.remove('wl-counter-slot--dragover'); if (cb.onSlotDrop) cb.onSlotDrop({itemId:e.dataTransfer.getData('text/plain'),slotIdx:slotIdx}); });
-          grid.appendChild(slot);
-        }(index));
-      }
-      return grid;
+      return _counterSlots(slots.slice(start, end), cb, start);
     }
     container.appendChild(renderSlots(0, Math.min(8, slots.length)));
     if (slots.length > 8) {

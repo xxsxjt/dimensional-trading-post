@@ -1010,8 +1010,20 @@
 
     state.worldId    = worldId;
     state.worldPlace = _rollPlace(worldId);
-    // 换世界等于换客源：当天商旅重新生成，之前的洽谈作废
-    if (state.counterState && state.counterState.npcId) _returnCounterItems();
+    // 换世界等于换客源：当天商旅重新生成，之前的洽谈作废。
+    //
+    // 柜台上的货必须**无条件**退进仓库，不能按 npcId 判断。
+    // 以前这里是 `if (state.counterState.npcId) _returnCounterItems();` ——
+    // 而 npcId 会被清空（洽谈作废），于是「槽位里有货但 npcId 是空」的那批货
+    // 既退不回仓库、又因为下面把 npcId/phase 清成 null 而变成无主之物：
+    // 卖不掉（没有商旅）、事件日志不提、玩家只看到柜台上多了一件来路不明的货。
+    //
+    // 现在无条件归还。仓库放不下的那几件会留在柜台上，
+    // 但会明确告诉玩家「仓库满了，这几件还在柜台上」，
+    // 而且 _counterItems 里它们还在，取回按钮照样能点。
+    var strandedBefore = (state.counterState && state.counterState.slots || []).filter(Boolean).length;
+    _returnCounterItems();
+    var stranded = (state.counterState && state.counterState.slots || []).filter(Boolean).length;
     if (state.counterState) {
       state.counterState.npcId = null;
       state.counterState.npc   = null;
@@ -1024,6 +1036,11 @@
     });
     state.todayEvents.push(_makeEvent('world_switch', '转场到' + _worldLabel(worldId),
       '界门开在' + state.worldPlace + '。今天来的都是这一界的客人。'));
+    if (stranded > 0) {
+      state.todayEvents.push(_makeEvent('counter_full', '仓库放不下，货留在柜台上',
+        '转场前有 ' + stranded + ' 件货收不回仓库（' + (strandedBefore - stranded) +
+        ' 件已退回），它们还在柜台上。先整理仓库再取回。'));
+    }
     _addDailyMarketEvents();
     // 转场当天就锁死。否则玩家可以来回换世界，每次换都重掷一批客商，
     // 一直换到满意为止——「今天来谁」的随机性等于白送。
@@ -1596,7 +1613,11 @@
       evaluateCounterOffer();
     } else {
       cs.offer = null;
-      cs.phase = 'active';
+      // 柜台空了之后，phase 只能回到 'active' —— 那表示「有个商旅在柜前」。
+      // 没有商旅（npcId 是空）时必须回到 'idle'，
+      // 否则柜台会显示成「正在谈一笔没有对手的生意」。
+      // 换界后遗留的货正是这种情况：npcId 被清空了，货还留着。
+      cs.phase = cs.npcId ? 'active' : 'idle';
     }
     render();
   }
