@@ -221,6 +221,7 @@ const TEST_SUITES = [
   ['npc', 'tests/npc-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
+  ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
 ];
@@ -242,8 +243,38 @@ ok('NPC 判定回归文件存在', existsSync(resolve(root, 'tests/npc-rules.cjs
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
+ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.cjs')));
+ok('基础玩法变异测试文件存在', existsSync(resolve(root, 'tests/loop-mutation.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
 ok('构建保留回归文件存在', existsSync(resolve(root, 'tests/build-retention.cjs')));
+
+/* 6b-2. 基础玩法这一轮修的几处，必须在源码里真的成立。
+ * 这些都是「差一点就出大问题」的地方，写在这里是为了防止以后有人
+ * 顺手改代码时把它们改回去，而且没被任何一条回归测到。
+ *
+ * 注意：断言前必须先把注释剥掉。
+ * 修复说明里本身就会写「以前这里是 `state.orders = []`」这种话，
+ * 直接正则匹配源码会命中注释里的字面量，
+ * 于是「明明已经修好了」却被判成没修 —— 假红。 */
+const stripComments = text => text
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+const shopCode = stripComments(shop);
+
+const incomeBody = (() => {
+  const i = shop.indexOf('function _hasIncomeToday');
+  return i >= 0 ? shop.slice(i, shop.indexOf('function _isStranded', i)) : '';
+})();
+ok('L1 破产判定把在途订单算作收入', /state\.orders\s*\|\|\s*\[\]/.test(incomeBody), 'fn=' + incomeBody.length);
+ok('L1 破产判定把在途派遣算作收入', /state\.dispatches\s*\|\|\s*\[\]/.test(incomeBody));
+ok('L1 破产判定把柜台上的货算作收入', /counterState[\s\S]{0,120}?slots/.test(incomeBody));
+ok('L2 停业不再清空在途订单', !/state\.orders\s*=\s*\[\]/.test(
+  (() => { const i = shop.indexOf('function _checkInsolvent'); return i >= 0 ? stripComments(shop.slice(i, i + 2200)) : ''; })()
+));
+ok('L3 结算时无条件归还柜台货物', /state\.todayEvents\s*=\s*\[\];[\s\S]{0,600}?\n\s*_returnCounterItems\(\);/.test(shopCode));
+ok('L3 结算不再按 npcId 有条件归还', !/if\s*\(state\.counterState\.npcId\)\s*_returnCounterItems\(\);/.test(
+  (() => { const i = shop.indexOf('function endDay'); return i >= 0 ? stripComments(shop.slice(i, i + 2600)) : ''; })()
+));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

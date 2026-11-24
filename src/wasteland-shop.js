@@ -281,9 +281,33 @@
   // 还有没有招可使：进得起货，或者手里还有货能卖。
   // 商旅并非只收想要的类目，任何货物都能折价出手，所以「仓里有货」就算一条路。
   // 判据不看金币正负——余额正好为 0 而仓库也空时，同样买不起货、无货可卖。
+  //
+  // **在途的收入也算一条路**。
+  // 玩家下单是**预付**的：钱在货到之前就付掉了，货还在路上。
+  // 派遣也一样：补给费先扣，战利品在路上。
+  // 这两种情况下「仓库是空的」不等于「没有收入」——
+  // 仓里没货只是因为货还没到。
+  //
+  // 以前这里只看仓里的现货，于是玩家会经历这种死局：
+  //   预付 ¤64 订了一批货 → 金币归零 → 仓库恰好是空的
+  //   → 当天结算判「无货可卖」→ 停业
+  //   → 而且停业会把在途订单一起清掉，那笔已经付掉的钱的货就永远不来了。
+  // 玩家既没犯错（他在正常经营），也拿不回钱，只能看着存档变成 gameOver。
   function _hasIncomeToday() {
     if ((state.returnedLoot || []).length) return true;
     if (Object.keys(state.grid.items || {}).length) return true;
+    // 柜台上还摆着货 —— 那也是一笔待成交的生意。
+    // 玩家把货放上柜台等出价，仓库就空了一半；
+    // 如果这时候金币也见底、今天又没有别的访客，
+    // 只看仓库的判据说「无货可卖」，但柜台上明明还摆着货。
+    var slots = (state.counterState && state.counterState.slots) || [];
+    for (var i = 0; i < slots.length; i++) {
+      if (slots[i]) return true;
+    }
+    // 在途订单：已经预付，货必然会在 leadDays 天后到。
+    if ((state.orders || []).length) return true;
+    // 在途派遣：补给费已付，队伍还在路上，回来时会有战利品。
+    if ((state.dispatches || []).length) return true;
     // 访客身上还有买得起的货，就还有生意可做
     return (state.todayNPCs || []).some(function (npc) {
       return (npc.offers || []).some(function (offer) { return offer.unitCost <= state.gold; });
@@ -310,8 +334,21 @@
         : '第 ' + state.day + ' 天，仓库已空且无力进货，小店停止营业。'));
     // 停业后要把当天的商旅和流动摊位收掉，否则店里还挂着没人接待的客人。
     state.todayNPCs = [];
-    state.orders    = [];
+    // 在途订单与派遣**不能**跟着停业一起清掉。
+    // 玩家下单是预付的、派遣是先扣了补给费的 —— 那些钱已经付掉了，
+    // 货也已经在路上。把在途记录清掉，等于让玩家为「没到手的货」付了钱还丢了货。
+    // 它们保留在存档里，玩家重开之后还能领到货、领到战利品。
+    //
+    // 以前这里是 `state.orders = []`，于是：
+    //   预付 → 金币见底 → 仓库恰好空 → 判停业 → 订单被清 → 钱货两失
+    // 现在停业只停「今天的营业」，不停「已经在路上的货」。
     if (state.counterState) {
+      // 柜台上的货要先退回仓库再把柜台清空。
+      // 顺序反了的话，柜台状态被清空（npcId/offer 置空）之后，
+      // 槽位里还留着货、但没人认领 —— 那批货就成了无主之物。
+      // 仓库放不下时 _returnCounterItems 会保留它们，
+      // 这时候柜台状态必须跟着一起留着，不能只清一半。
+      _returnCounterItems();
       state.counterState.npcId = null;
       state.counterState.npc   = null;
       state.counterState.phase = 'idle';
@@ -2133,7 +2170,13 @@
       : null;
     var openNpc = state.counterState.npc;
     state.todayEvents = [];
-    if (state.counterState.npcId) _returnCounterItems();
+    // 柜台上的货必须退进仓库，不管今天有没有客人。
+    // 以前这里写的是 `if (state.counterState.npcId) _returnCounterItems();`，
+    // 于是「槽位里有货但 npcId 是空」的那批货永远退不回来 ——
+    // 它们既不在仓库里（玩家看不到、卖不掉），
+    // 也不在柜台的结算范围里（被当成不存在）。
+    // 现在的写法是无条件归还：槽位里有就退，没就什么都不做。
+    _returnCounterItems();
     if (openDeal) {
       state.todayEvents.push(_makeEvent('deal_abandoned', '这笔生意留到明天',
         '结算时' + (openNpc && openNpc.name ? openNpc.name : '商旅') +
