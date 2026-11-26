@@ -408,12 +408,14 @@
     container.innerHTML = '';
     container.style.cssText = '';
     var header = el('h2', {class:'wl-trade-title wl-visitor-heading'}, '今日商旅');
-    header.appendChild(el('span', {}, list.filter(function (npc) { return !npc.activated; }).length + ' 位待接待'));
+    header.appendChild(el('span', {}, list.filter(function (npc) { return !npc.activated && !npc.dispatched; }).length + ' 位待接待'));
     container.appendChild(header);
     if (!list.length) container.appendChild(el('p', {class:'wl-empty'}, '今天还没有商旅抵达。'));
     list.forEach(function (npc) {
       var visitor = worldForNpc(npc), done = !!npc.activated, current = cb.activeNpcId === npc.id;
-      var card = el('div', {class:'wl-visitor' + (done ? ' wl-visitor--done' : '') + (current ? ' wl-visitor--current' : ''),'data-id':npc.id,tabindex:'-1',style:'--wl-world-color:' + visitor.color + ';'});
+      // 「在途」是第三种状态：出远门的人不在店里，不能接待，但也不能算已接待。
+      var away = !!npc.dispatched;
+      var card = el('div', {class:'wl-visitor' + (done ? ' wl-visitor--done' : '') + (away ? ' wl-visitor--away' : '') + (current ? ' wl-visitor--current' : ''),'data-id':npc.id,tabindex:'-1',style:'--wl-world-color:' + visitor.color + ';'});
       // 立绘优先，没有就退回世界标记（☢ / ☯）。立绘是 512 方图，
       // 列表里裁成圆形头像，失败时同样退回标记，不会留空。
       var portrait = npcArt(npc);
@@ -433,7 +435,7 @@
       var wants = (npc.wants || []).map(function (w) { return typeConf(w.category || w).label; }).join('、');
       info.appendChild(el('span', {class:'wl-visitor-budget'}, '预算 ¤' + (npc.budget || 0) + (wants ? ' · 收 ' + wants : '')));
       card.appendChild(info);
-      if (done || current) card.appendChild(el('span', {class:'wl-visitor-status'}, done ? '已接待' : '洽谈中'));
+      if (done || current || away) card.appendChild(el('span', {class:'wl-visitor-status' + (away && !done ? ' wl-visitor-status--away' : '')}, done ? '已接待' : (away ? '出远门' : '洽谈中')));
       else {
         var btn = el('button', {type:'button',class:'wl-btn wl-btn--sm wl-btn--ghost','aria-label':(npc.intel ? '向 ' : '接待 ') + (npc.name || '商旅') + (npc.intel ? ' 问情报' : '')}, npc.intel ? '问情报' : '接待');
         on(btn, 'click', function () {

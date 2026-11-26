@@ -239,6 +239,7 @@ const TEST_SUITES = [
   ['dispatch-rare-gate', 'tests/dispatch-rare-gate.cjs'],
   ['dispatch-econ', 'tests/dispatch-econ.cjs'],
   ['dispatch-dispatch-target', 'tests/dispatch-dispatch-target.cjs'],
+  ['dispatch-away-merchant', 'tests/dispatch-away-merchant.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -275,6 +276,7 @@ ok('派遣经济回归文件存在', existsSync(resolve(root, 'tests/dispatch-ec
 ok('派遣经济模型文件存在', existsSync(resolve(root, 'tests/dispatch-econ-model.cjs')));
 ok('派遣经济变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-econ-mutation.cjs')));
 ok('派遣目标选择回归文件存在', existsSync(resolve(root, 'tests/dispatch-dispatch-target.cjs')));
+ok('在途商旅回归文件存在', existsSync(resolve(root, 'tests/dispatch-away-merchant.cjs')));
 
 /* 6b-8. 报告里写的「派遣回归 N 项」必须和实际跑出来的条数一致。
  *
@@ -295,6 +297,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/dispatch-rare-gate.cjs', 17],
   ['tests/dispatch-econ.cjs', 21],
   ['tests/dispatch-dispatch-target.cjs', 8],
+  ['tests/dispatch-away-merchant.cjs', 7],
   ['tests/market-rules.cjs', 6],
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
@@ -959,6 +962,52 @@ if (dispatchIdx >= 0) {
 }
 ok('D7 派遣目标选择回归文件存在',
   existsSync(resolve(root, 'tests/dispatch-dispatch-target.cjs')));
+
+/* 6b-10. 缺陷 D8：在途 ≠ 在柜台
+ *
+ * dispatched 与 activated 是两个互斥的「占用」状态：
+ * 出远门的人物理上不在店里，既不能被接待，也不能买他的货。
+ *
+ * 以前的 UI 只看 npc.activated 判断「是否已处理」，
+ * shop 的 activateNpc 也只看 npc.activated，
+ * 于是 dispatched 从来没被这两处读过 ——
+ * 人在路上，玩家照样能把他请上柜台把他今天的货买空。
+ */
+const uiSrc = src('src/wasteland-ui.js');
+const uiQueueIdx = uiSrc.indexOf('function renderNpcQueue');
+ok('D8 renderNpcQueue 存在', uiQueueIdx >= 0, '商旅队列渲染函数必须能找到');
+if (uiQueueIdx >= 0) {
+  const qfn = uiSrc.slice(uiQueueIdx, uiQueueIdx + 3200);
+  ok('D8 UI 必须读 npc.dispatched',
+    /npc\.dispatched/.test(qfn),
+    '队列渲染只看 activated 的话，出远门的人照样挂着「接待」按钮');
+  ok('D8 出远门的人不得出现「接待」按钮',
+    /away\s*\|\|\s*current\s*\|\|\s*done/.test(qfn) ||
+      /done\s*\|\|\s*current\s*\|\|\s*away/.test(qfn),
+    '渲染分支必须把 away 算进去 —— 否则按钮照旧挂上');
+  ok('D8 UI 必须标出「出远门」状态',
+    /出远门/.test(qfn),
+    '玩家得看得出谁在路上，否则会一直以为对方还在店里');
+}
+const activateIdx = shopSrc.indexOf('function activateNpc');
+ok('D8 activateNpc 存在', activateIdx >= 0, '接待入口必须能找到');
+if (activateIdx >= 0) {
+  const afn = shopSrc.slice(activateIdx, activateIdx + 900);
+  ok('D8 activateNpc 必须拦下 dispatched 的商旅',
+    /npc\.activated\s*\|\|\s*npc\.dispatched/.test(afn),
+    '绕过 UI 直接调 activateNpc 也能把远方的人叫上柜台 —— ' +
+    '他在路上，物理上不在店里');
+}
+const fallbackIdx = shopSrc.indexOf('function _renderNpcQueueFallback');
+ok('D8 fallback 队列渲染存在', fallbackIdx >= 0, 'fallback 路径必须能找到');
+if (fallbackIdx >= 0) {
+  const ffn = shopSrc.slice(fallbackIdx, fallbackIdx + 2600);
+  ok('D8 fallback 队列也必须拦下出远门的人',
+    /npc\.activated\s*\|\|\s*npc\.dispatched/.test(ffn),
+    '没有 UI 模块时走 fallback；不拦的话旧缺陷从这条路复活');
+}
+ok('D8 在途商旅回归文件存在',
+  existsSync(resolve(root, 'tests/dispatch-away-merchant.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

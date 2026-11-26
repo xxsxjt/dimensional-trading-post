@@ -203,6 +203,30 @@ const MUTATIONS = [
     // 变异：锁挪回函数开头 —— 失败的派遣也会锁死当天。
     _lockWorld();
     var tier = DISPATCH_TIERS[destination];`)
+  },
+  /* ══ 缺陷 D8：在途 ≠ 在柜台 ═════════════════════════════════ */
+  {
+    name: 'M20 UI 只看 activated（出远门的人还挂着「接待」按钮）',
+    file: UIJS,
+    from: crlf(`      if (done || current || away) card.appendChild(el('span', {class:'wl-visitor-status' + (away && !done ? ' wl-visitor-status--away' : '')}, done ? '已接待' : (away ? '出远门' : '洽谈中')));`),
+    to:   crlf(`      // 变异：away 被忽略 —— 出远门的人照样给「接待」按钮。
+      if (done || current) card.appendChild(el('span', {class:'wl-visitor-status'}, done ? '已接待' : '洽谈中'));`)
+  },
+  {
+    name: 'M21 activateNpc 不挡 dispatched（绕过 UI 也能把远方的人叫上柜台）',
+    file: SHOP,
+    from: crlf(`    if (!npc || npc.activated || npc.dispatched) return;
+    _lockWorld();`),
+    to:   crlf(`    // 变异：dispatched 不再算拦截 —— 出远门的人能被请上柜台。
+    if (!npc || npc.activated) return;
+    _lockWorld();`)
+  },
+  {
+    name: 'M22 fallback 队列不禁用出远门的人（无 UI 时旧路径复活）',
+    file: SHOP,
+    from: crlf(`      btn.disabled    = npc.activated || npc.dispatched;`),
+    to:   crlf(`      // 变异：fallback 不看 dispatched —— 出远门的人还能被接待。
+      btn.disabled    = npc.activated;`)
   }
 ];
 
@@ -223,7 +247,7 @@ function restoreAll() {
  * 以前只跑前者。缺陷 D5 藏在后者的视野里 ——
  * 定��规则的模型不算稀有门槛，所以它对「门槛没了」完全无感。
  * 现在两套都跑，缺一不可。 */
-const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs', 'dispatch-dispatch-target.cjs'];
+const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs', 'dispatch-dispatch-target.cjs', 'dispatch-away-merchant.cjs'];
 
 function runTests() {
   for (const suite of SUITES) {

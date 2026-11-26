@@ -1951,7 +1951,9 @@
   // ── activateNpc：激活 NPC 到柜台 ─────────────────────────
   function activateNpc(npcId) {
     var npc = _findNpc(npcId);
-    if (!npc || npc.activated) return;
+    // 「在途」和「在柜台」是互斥状态：出远门的人物理上不在店里，
+    // 无论从 UI 队列还是直接调 API 都不能把他请上柜台。
+    if (!npc || npc.activated || npc.dispatched) return;
     _lockWorld();
 
     // 情报贩子：显示情报报价弹窗
@@ -3220,14 +3222,17 @@
       subEl.style.cssText = 'font-size:11px;color:#7890ab;';
       subEl.textContent = npc.label +
         (npc.intel ? ' · 情报 ¤' + npc.intelPrice : ' · 预算 ¤' + npc.budget);
+      if (npc.dispatched) subEl.textContent += ' · 出远门';
       info.appendChild(nameEl);
       info.appendChild(document.createElement('br'));
       info.appendChild(subEl);
       var btn = document.createElement('button');
       btn.className   = 'wl-btn wl-btn--sm';
       btn.type        = 'button';
-      btn.textContent = npc.activated ? '已处理' : (npc.intel ? '购情报' : '接待');
-      btn.disabled    = npc.activated;
+      // 出远门的人不在店里，既不能接待也不能买情报。
+      btn.textContent = npc.activated ? '已处理'
+        : (npc.dispatched ? '出远门' : (npc.intel ? '购情报' : '接待'));
+      btn.disabled    = npc.activated || npc.dispatched;
       btn.addEventListener('click', (function (capturedId) {
         return function () { activateNpc(capturedId); };
       }(npc.id)));

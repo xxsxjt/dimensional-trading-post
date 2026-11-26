@@ -257,20 +257,67 @@ console.log('PASS a legacy visitor without a faction field still credits the rig
   const s = createSession();
   const before = JSON.parse(JSON.stringify(s.state().reputation.factions));
 
+  let sales = 0;
   for (let day = 0; day < 40; day++) {
     const st = s.state();
     const visitor = st.todayNPCs.find(v => !v.intel && !v.activated);
     if (visitor) {
       s.nodes.get('wl-switch-shop').onclick();
       s.callbacks.queue.cb.onActivate(visitor.id);
-      const ids = Object.keys(st.grid.items);
+
+      /* 先从他手里进货 —— 这是仓库的**唯一**补给渠道。
+       *
+       * 这一步以前是漏掉的，于是这条测试自己坏掉了：
+       * 开局只有 5 件起始物品，卖完就没有货了，
+       * 后面 35 天里 ids.length 一直是 0，一次都成交不了。
+       * 所谓「40 天连续成交」实际只成交了 4~5 次 ——
+       * 而这几次全落在同一个阵营（拾荒者）的概率不小，
+       * 于是断言 touched.length >= 2 偶发失败。
+       *
+       * 这是一条**测试自己的缺陷**，不是产品的：
+       * 产品侧「玩家可以主动向商旅进货」这条路径一直通着，
+       * 测试没走而已。漏掉这一步，
+       * 这条断言测的其实是「随机数够不够运气」，不是「分阵营声望通不通电」。
+       *
+       * 顺序也重要：**必须先进货再成交**。
+       * 成交会把 counterState.npcId 清成 null，
+       * 之后再调 onTakeOffer 就找不到商旅了（静默无操作），
+       * 仓库照样一天天空下去。
+       *
+       * 买几件也要看余额：价钱高于手里的钱就别买了，
+       * 否则 gold 会变成负数，后面全盘停业。
+       */
+      let bought = 0;
+      while (bought < 3) {
+        const offers = (s.callbacks.counterData && s.callbacks.counterData.offers) || [];
+        if (!offers.length) break;
+        const cheapest = offers.reduce(function (m, o) {
+          return Math.min(m, o.unitCost);
+        }, Infinity);
+        if (s.state().gold <= cheapest) break;
+        const sizeBefore = Object.keys(s.state().grid.items).length;
+        s.callbacks.counter.onTakeOffer(offers[0].id, 1);
+        if (Object.keys(s.state().grid.items).length <= sizeBefore) break;   // 买不动了
+        bought++;
+      }
+
+      /* 然后把手上的货卖掉 */
+      const ids = Object.keys(s.state().grid.items);
       if (ids.length) {
         s.callbacks.grid.onSelect(ids[0]);
         s.callbacks.counter.onConfirm();
+        sales++;
       }
     }
     s.endDay();
   }
+
+  /* 前置条件自检：40 天必须真的成交了足够多次。
+   * 不加这条，断言会因为「压根没成交」而假绿/假红。
+   * 修好进货后，300 个种子里最少成交 13 次，门槛取 10 留足余量。 */
+  assert.ok(sales >= 10,
+    'forty days of trading must actually produce at least ten sales, got ' + sales +
+    ' (if the warehouse runs dry the test is measuring luck, not the faction system)');
 
   const after = s.state().reputation.factions;
   const touched = Object.keys(after).filter(f => after[f] !== before[f]);

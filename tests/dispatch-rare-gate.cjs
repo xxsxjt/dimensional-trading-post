@@ -217,8 +217,13 @@ test('稀有门槛的 chance 必须落在合理区间（5%–40%）', function (
 console.log('\n[二] 稀有门槛必须真的生效');
 
 /* core 的 _generateDispatchLoot 是内部的，但 createDispatch + advanceDay
- * 能走通完整链路。这里直接调 advanceDay，让派遣归来时生成战利品。 */
-function lootFromAdvanceDay(destination) {
+ * 能走通完整链路。这里直接调 advanceDay，让派遣归来时生成战利品。
+ *
+ * **沙箱只建一次**，然后反复调 advanceDay。
+ * 以前每次抽样都重建一遍 vm context、重新解析一遍 core 源码 ——
+ * 1000 次抽样就是 1000 次全量解析，慢到没法把样本量提上去。
+ * 而样本量提不上去，容差就只能靠「手调」，一调就变成运气游戏（见下）。 */
+function makeLootSampler(destination) {
   const ctx = vm.createContext({
     window: {}, document: { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} } },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
@@ -226,65 +231,93 @@ function lootFromAdvanceDay(destination) {
   });
   vm.runInContext(fs.readFileSync(path.join(root, 'src', 'wasteland-core.js'), 'utf8'), ctx, { filename: 'core' });
   const C = ctx.window.WastelandCore;
-  const state = {
-    day: 1, grid: C.createGrid(4, 4), market: C.createMarketState(),
-    dispatches: [{ id: 'd1', npcName: '甲', destination: destination, daysRemaining: 1,
-                   totalDays: 1, status: 'out' }],
-    returnedLoot: []
+  let n = 0;
+  return function lootFromAdvanceDay() {
+    n++;
+    const state = {
+      day: 1, grid: C.createGrid(4, 4), market: C.createMarketState(),
+      dispatches: [{ id: 'd' + n, npcName: '甲', destination: destination, daysRemaining: 1,
+                     totalDays: 1, status: 'out' }],
+      returnedLoot: []
+    };
+    C.advanceDay(state);
+    return state.returnedLoot || [];
   };
-  C.advanceDay(state);
-  return state.returnedLoot || [];
+}
+
+/* 稀有品出现率的统计判据。
+ *
+ * 这里原来用的是**单边手调容差**：rate < doubleCounted - 0.02。
+ * 那个 0.02 看起来很严，其实**离真值只有 2.3 个标准差**：
+ *   深入禁区声明 20%，样本 ~1400 个槽位时
+ *   σ = sqrt(0.2×0.8/1400) ≈ 1.07%
+ *   门槛 = 0.2 + 0.8/18 − 0.02 = 22.44%，即 (22.44−20)/1.07 ≈ 2.3σ
+ * 也就是说**每次跑有大约 1% 的概率红** ——
+ * 实测 60 次里红了 1 次，与这个推算吻合。
+ *
+ * 真正的缺陷是**双重计入的判据太弱**：
+ * 声明 20%、门槛失效后是 24.4%，两者只差 4.4 个百分点，
+ * 而抽样误差就有 ±1 个百分点 —— 靠「手调一个常数」去分辨它们，
+ * 必然要么放走缺陷、要么自己假红。
+ *
+ * 改法两条：
+ *   1. **样本量提上去**（沙箱复用后成本极低），
+ *      σ 随 1/√n 缩小，容差就能收紧到「实测值必须贴着声明值」。
+ *   2. **判据换成双向**：既不能高于「双重计入上界」（门槛没架空），
+ *      也不能低于「声明值减去若干 σ」（门槛没反向）。
+ *      方向反了（M13）时实测率会掉到 0.9%，双向判据才能抓住。
+ */
+function assertRareRate(tierName, samples, minSlots) {
+  const r = loot[tierName].rare;
+  assert.ok(r, tierName + ' has no rare gate');
+  const sampler = makeLootSampler(tierName);
+  let hits = 0, slots = 0;
+  for (let i = 0; i < samples; i++) {
+    sampler().forEach(function (it) {
+      slots++;
+      if (r.skus.indexOf(it.skuId) !== -1) hits++;
+    });
+  }
+  assert.ok(slots >= minSlots,
+    tierName + ': not enough slots to judge: ' + slots + ' (need ' + minSlots + ')');
+  const rate = hits / slots;
+  const commonSize = loot[tierName].skus.length - r.skus.length;
+  /* 门槛被架空（稀有品留在普通池里）时的实测上界 */
+  const doubleCounted = r.chance + (1 - r.chance) / commonSize;
+  /* 抽样标准差：二项分布 p̂ 的标准误 */
+  const sigma = Math.sqrt(Math.max(rate, 1e-9) * (1 - rate) / slots);
+  /* 4σ —— 双向都留足余量，不会假红；
+     而「双重计入」把率抬高了 (1−chance)/commonSize，
+     样本够多时这个抬升远大于 4σ，缺陷照样被抓住。 */
+  const z = 4;
+  assert.ok(rate < doubleCounted - z * sigma,
+    tierName + ': the rare gate is double-counted: declared ' + (r.chance * 100) +
+    '% but measured ' + (rate * 100).toFixed(2) +
+    '% (a bypassed gate would land near ' + (doubleCounted * 100).toFixed(2) +
+    '%, allowed < ' + ((doubleCounted - z * sigma) * 100).toFixed(2) + '%)');
+  assert.ok(rate > r.chance - z * sigma,
+    tierName + ': the rare gate is inverted or too tight: declared ' + (r.chance * 100) +
+    '% but measured ' + (rate * 100).toFixed(2) +
+    '% (a reversed gate collapses the rate to ~' +
+    ((r.chance / loot[tierName].skus.length) * 100).toFixed(2) + '%)');
+  assert.ok(rate > 0.005,
+    tierName + ': the rare gate is too tight: measured ' + (rate * 100).toFixed(2) + '%');
 }
 
 test('宗门遗迹的稀有品出现率必须接近声明的 chance（不是 100%）', function () {
-  const r = loot.sect_ruins.rare;
-  assert.ok(r, 'sect_ruins has no rare gate');
-  const N = 600;
-  let hits = 0, slots = 0;
-  for (let i = 0; i < N; i++) {
-    const items = lootFromAdvanceDay('sect_ruins');
-    items.forEach(function (it) {
-      slots++;
-      if (r.skus.indexOf(it.skuId) !== -1) hits++;
-    });
-  }
-  assert.ok(slots > 300, 'not enough slots to judge: ' + slots);
-  const rate = hits / slots;
-  /* 声明 10%。容差必须**紧**：
-   * 门槛一旦被架空（普通池里还留着稀有品），实际概率会变成
-   *   chance + (1-chance)/池大小 = 0.10 + 0.90/13 ≈ 17%。
-   * 以前这里的容差是 ±6 个百分点（10%+6% = 16%），
-   * 于是 17% 正好从缝里溜过去 —— 变异 M13 就是这么漏掉的。
-   *
-   * 现在按**池大小**算双重计入后的概率上界，再留 2 个百分点的余量：
-   *   上界 = chance + (1-chance)/普通池大小
-   * 门槛真的生效时，实测值应当**明显低于**这个上界。 */
-  const commonSize = loot.sect_ruins.skus.length - r.skus.length;
-  const doubleCounted = r.chance + (1 - r.chance) / commonSize;
-  assert.ok(rate < doubleCounted - 0.02,
-    'the rare gate is double-counted: declared ' + (r.chance * 100) +
-    '% but measured ' + (rate * 100).toFixed(1) +
-    '% (a bypassed gate would land near ' + (doubleCounted * 100).toFixed(1) + '%)');
-  assert.ok(rate > 0.01,
-    'the rare gate is too tight: measured ' + (rate * 100).toFixed(1) + '%');
+  /* 声明 10%。双重计入后的上界 = 0.10 + 0.90/13 ≈ 16.9%。
+   * 样本量取 3000 趟（约 6000 个槽位）→ σ ≈ 0.4%，
+   * 4σ 的容差 ≈ 1.6%，门槛落在 10% ± 1.6% 与 < 15.3% 之间，
+   * 既抓得住「架空」，也不会自己假红。 */
+  assertRareRate('sect_ruins', 3000, 4000);
 });
 
 test('深入禁区的稀有品出现率必须接近声明的 chance', function () {
-  const r = loot.deepzone.rare;
-  const N = 400;
-  let hits = 0, slots = 0;
-  for (let i = 0; i < N; i++) {
-    lootFromAdvanceDay('deepzone').forEach(function (it) {
-      slots++;
-      if (r.skus.indexOf(it.skuId) !== -1) hits++;
-    });
-  }
-  const rate = hits / slots;
-  const commonSize = loot.deepzone.skus.length - r.skus.length;
-  const doubleCounted = r.chance + (1 - r.chance) / commonSize;
-  assert.ok(rate < doubleCounted - 0.02,
-    'the rare gate is double-counted: declared ' + (r.chance * 100) +
-    '% but measured ' + (rate * 100).toFixed(1) + '%');
+  /* 声明 20%，双重计入上界 ≈ 24.4%。
+   * 旧判据 rate < 22.4% 离真值只有 2.3σ，每次跑约 1% 概率假红 ——
+   * 实测 60 次红了 1 次。现在样本提到 3000 趟（约 10500 个槽位），
+   * σ ≈ 0.4%，4σ 容差 ≈ 1.6%，门槛落在 20% ± 1.6% 与 < 22.8% 之间。 */
+  assertRareRate('deepzone', 3000, 8000);
 });
 
 test('稀有门槛一旦生效，普通池里就抽不到稀有品（不能双重计入）', function () {
