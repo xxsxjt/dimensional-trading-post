@@ -856,9 +856,22 @@
   }
 
   // ── sendDispatch：派一队出去 ──────────────────────────────
-  function sendDispatch(destination) {
+  //
+  // npcId 是玩家在「派谁去」面板上**选中的那位商旅**（UI 传进来的）。
+  //
+  // 以前这个参数根本不存在，sendDispatch 只接 destination，
+  // 然后自己「挑当天还没被接待过的第一个普通商旅」。
+  // 于是面板上的选择完全不起作用：
+  //   · 玩家点了 chip（有 wl-chip--on 的选中态），以为派的是他；
+  //   · 实际被派走的是列表里的第一个。
+  //
+  // 这不只是「选择被忽略」，它会**误伤玩家**：
+  // 玩家会先接待想留下的那个商旅（把预算谈好、把货卖给他），
+  // 再派另一个去跑腿 —— 结果被派走的恰恰是刚谈好生意那位，
+  // 他的 npc.activated 被改成 dispatched，不能再上柜，
+  // 那笔刚谈成的生意就黄了。界面还显示着「已选中」，在**说谎**。
+  function sendDispatch(destination, npcId) {
     if (state.gameOver) return;
-    _lockWorld();
     var tier = DISPATCH_TIERS[destination];
     if (!tier) return;
     // UI 已经过滤过，但这里也要挡一道：绕过 UI 直接调用的路径不该能跨世界派队
@@ -892,19 +905,47 @@
       return;
     }
 
-    // 派谁去：优先挑当天还没被接待过的普通商旅
+    // 派谁去：优先用玩家在面板上选中的那位。
+    //
+    // 选中的那位必须**真的可选**：
+    //   · 必须在今天的访客名单里；
+    //   · 不能是情报贩子（intel）；
+    //   · 不能已经被派走（dispatched）；
+    //   · 不能还在柜台上谈生意（activated）——
+    //     把正在谈的商旅拉去跑腿，等于把玩家自己的生意搅黄。
+    // 任何一条不满足就退回旧行为（挑第一个空闲的），
+    // 这样绕过 UI 直接调 onSend(destination) 而不传 npcId 的路径不会失效。
     var candidate = null;
-    (state.todayNPCs || []).forEach(function (npc) {
-      if (candidate || !npc || npc.intel) return;
-      if (npc.dispatched) return;
-      candidate = npc;
-    });
+    if (npcId) {
+      candidate = _findNpc(npcId);
+      if (candidate && (candidate.intel || candidate.dispatched || candidate.activated)) {
+        candidate = null;
+      }
+    }
+    if (!candidate) {
+      (state.todayNPCs || []).forEach(function (npc) {
+        if (candidate || !npc || npc.intel) return;
+        if (npc.dispatched) return;
+        /* 正在柜台上谈生意的商旅不能被拉去跑腿 ——
+           把他派走，那笔谈好的买卖就黄了。
+           注释里一直写着「还没被接待过的」，但这条判断从来没写出来。 */
+        if (npc.activated) return;
+        candidate = npc;
+      });
+    }
     if (!candidate) {
       state.todayEvents.push(_makeEvent('dispatch_fail', '没有可派的商旅',
         '今天没有空闲的商旅可以出行。'));
       render();
       return;
     }
+
+    // 所有前置条件都过了，这时候才锁世界。
+    // 以前 _lockWorld() 写在函数第一行 —— 体力不足、资金不足、
+    // 派遣位已满、没商旅可派，这四种失败都会把当天锁死：
+    // 玩家点了一下失败的按钮，当天就不能再换世界了，
+    // 而他什么都没做成。锁要等到事真成了再上。
+    _lockWorld();
 
     state.gold -= tier.fee;
     candidate.dispatched = true;

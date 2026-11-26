@@ -147,6 +147,62 @@ const MUTATIONS = [
     from: crlf(`    suburb:   { key: 'suburb',   label: '近郊',     fee: 2,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`),
     to:   crlf(`    // 变异：占比 33% —— 超过中距离（22.5%）和深入禁区（19.1%）。
     suburb:   { key: 'suburb',   label: '近郊',     fee: 4,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`)
+  },
+  /* ══ 缺陷 D7：派遣目标选择 ══════════════════════════════════ */
+  {
+    name: 'M16 忽略玩家选中的商旅（面板上的选择完全不起作用）',
+    file: SHOP,
+    from: crlf(`    if (npcId) {
+      candidate = _findNpc(npcId);
+      if (candidate && (candidate.intel || candidate.dispatched || candidate.activated)) {
+        candidate = null;
+      }
+    }`),
+    to:   crlf(`    // 变异：npcId 参数被收下但不用 —— 又回到「自己挑第一个」。
+    if (false) {
+      candidate = null;
+    }`)
+  },
+  {
+    name: 'M17 正在谈生意的商旅也能被派走（把玩家自己的生意搅黄）',
+    file: SHOP,
+    from: crlf(`      if (candidate && (candidate.intel || candidate.dispatched || candidate.activated)) {
+        candidate = null;
+      }`),
+    to:   crlf(`      // 变异：activated 不再算不可派 —— 柜台上正谈着的商旅被拉去跑腿。
+      if (candidate && (candidate.intel || candidate.dispatched)) {
+        candidate = null;
+      }`)
+  },
+  {
+    name: 'M18 自动选人时不做任何资格过滤（情报贩子被派去跑腿）',
+    file: SHOP,
+    from: crlf(`      (state.todayNPCs || []).forEach(function (npc) {
+        if (candidate || !npc || npc.intel) return;
+        if (npc.dispatched) return;
+        /* 正在柜台上谈生意的商旅不能被拉去跑腿 ——
+           把他派走，那笔谈好的买卖就黄了。
+           注释里一直写着「还没被接待过的」，但这条判断从来没写出来。 */
+        if (npc.activated) return;
+        candidate = npc;
+      });`),
+    to:   crlf(`      // 变异：资格过滤整个去掉 —— 情报贩子 / 已派走的也会被选中。
+      (state.todayNPCs || []).forEach(function (npc) {
+        if (candidate || !npc) return;
+        candidate = npc;
+      });`)
+  },
+  {
+    name: 'M19 失败也锁世界（点一下失败的按钮，当天就被锁死）',
+    file: SHOP,
+    from: crlf(`  function sendDispatch(destination, npcId) {
+    if (state.gameOver) return;
+    var tier = DISPATCH_TIERS[destination];`),
+    to:   crlf(`  function sendDispatch(destination, npcId) {
+    if (state.gameOver) return;
+    // 变异：锁挪回函数开头 —— 失败的派遣也会锁死当天。
+    _lockWorld();
+    var tier = DISPATCH_TIERS[destination];`)
   }
 ];
 
@@ -167,7 +223,7 @@ function restoreAll() {
  * 以前只跑前者。缺陷 D5 藏在后者的视野里 ——
  * 定��规则的模型不算稀有门槛，所以它对「门槛没了」完全无感。
  * 现在两套都跑，缺一不可。 */
-const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs'];
+const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs', 'dispatch-dispatch-target.cjs'];
 
 function runTests() {
   for (const suite of SUITES) {

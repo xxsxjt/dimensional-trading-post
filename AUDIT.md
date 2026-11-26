@@ -18,7 +18,7 @@
 | WARN | 0 |
 | 通过（无告警） | 目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、派遣世界门与定价、派遣稀有门槛与经济对标、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、换界柜台守恒、机器世界归属、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS） |
 
-  自动化测试 `npm test` **153 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 换界回归 8 项 + 机器世界归属回归 8 项 + 派遣回归 26 项 + 派遣稀有门槛回归 17 项 + 派遣经济回归 21 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项 + 构建孤儿捞回回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **181 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **161 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 换界回归 8 项 + 机器世界归属回归 8 项 + 派遣回归 26 项 + 派遣稀有门槛回归 17 项 + 派遣经济回归 21 项 + 派遣目标选择回归 8 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项 + 构建孤儿捞回回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **188 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -1512,12 +1512,185 @@ FAIL the orphaned hashed artifact must be salvaged into retained —
 
 ---
 
+## 四之十三、缺陷 D7：面板上选的商旅被丢掉，派出的是另一个人（本轮新增）
+
+### 缺陷 D7：UI 传了 `npcId`，shop 只接第一个参数
+
+派遣面板上有一排「派谁去」的 chip（`renderDispatchPanel`），
+玩家点一颗头像选中某位商旅，然后点档位按钮出发。
+UI 确实把选中的那位传了下去：
+
+```javascript
+// src/wasteland-ui.js
+if (cb.onSend) cb.onSend(key, chosenId);   // ← chosenId 是选中的商旅 id
+```
+
+但 shop 侧的 `sendDispatch` **只接第一个参数**，第二个直接掉在地上：
+
+```javascript
+// src/wasteland-shop.js（修之前）
+function sendDispatch(destination) {
+  ...
+  // 派谁去：优先挑当天还没被接待过的普通商旅
+  var candidate = null;
+  (state.todayNPCs || []).forEach(function (npc) {
+    if (candidate || !npc || npc.intel) return;
+    if (npc.dispatched) return;
+    candidate = npc;                        // ← 永远是列表里的第一个
+  });
+```
+
+于是**面板上的选择完全不起作用**。
+
+### 后果：它不是「选择被忽略」，它会误伤玩家
+
+玩家的正常玩法顺序是：先接待想留下的那位（把预算谈好、把他要的货备齐），
+再派另一位去跑腿。
+
+实际被派走的是列表里第一个空闲的 —— 很可能**正是刚接待完、准备留下来做生意的那个**。
+他的 `npc.activated` 被改成 `dispatched`，不能再上柜，那笔刚谈好的买卖就黄了。
+
+而且 chip 上有**视觉选中态**（`wl-chip--on`），
+玩家以为自己选中了谁、谁就走了 —— **界面在说谎**。
+
+还有一层：注释里写着「优先挑当天**还没被接待过**的普通商旅」，
+但代码里**从来没写过 `activated` 这条判断**。
+注释承诺的语义，实现里是空的。
+
+### 附带发现：失败的派遣会把当天锁死
+
+同一个函数里，`_lockWorld()` 写在**第一行**：
+
+```javascript
+function sendDispatch(destination) {
+  if (state.gameOver) return;
+  _lockWorld();                    // ← 还没做任何校验就锁了
+  var tier = DISPATCH_TIERS[destination];
+  ...
+```
+
+`_lockWorld()` 一上，当天就不能再换世界了。
+而接在后面的校验有**四种失败出口**：体力不足、资金不足、派遣位已满、没有可派的商旅。
+
+也就是说：玩家点了一下**什么都没发生**的按钮，当天就废了。
+锁要等到事真成了再上。
+
+### 修法
+
+```javascript
+function sendDispatch(destination, npcId) {
+  if (state.gameOver) return;
+  var tier = DISPATCH_TIERS[destination];
+  if (!tier) return;
+  ... // 世界校验 / 体力 / 并发上限 / 资金，全部先过
+
+  // 派谁去：优先用玩家在面板上选中的那位。
+  // 选中的那位必须真的可选：不能是情报贩子、不能已被派走、
+  // 不能还在柜台上谈生意（activated）。
+  var candidate = null;
+  if (npcId) {
+    candidate = _findNpc(npcId);
+    if (candidate && (candidate.intel || candidate.dispatched || candidate.activated)) {
+      candidate = null;
+    }
+  }
+  if (!candidate) {
+    (state.todayNPCs || []).forEach(function (npc) {
+      if (candidate || !npc || npc.intel) return;
+      if (npc.dispatched) return;
+      if (npc.activated) return;          // ← 补上注释承诺的那条判断
+      candidate = npc;
+    });
+  }
+  if (!candidate) { /* 失败返回，此时还没锁世界 */ }
+
+  _lockWorld();                          // ← 所有前置都过了才锁
+  state.gold -= tier.fee;
+  ...
+}
+```
+
+两处细节：
+
+- 选中的那位**不合格**时退回旧行为（挑第一个空闲的），
+  这样绕过 UI 直接调 `onSend(destination)` 不传 `npcId` 的路径不会失效；
+- 补上 `activated` 判断后，「还没被接待过」这句话才第一次真的成立。
+
+### 回归与变异验证
+
+新增 `tests/dispatch-dispatch-target.cjs`（8 项）：
+
+1. UI 把选中 chip 的商旅 id 传给 `onSend`；
+2. 派出去的商旅是玩家选中的那一位；
+3. 只有被选中的人被标记为 `dispatched`；
+4. 选中的商旅已接待过时，派遣不能悄悄换成别人；
+5. 绕过 UI 直接调 `onSend` 时也必须尊重传入的 `npcId`；
+6. 资金不足时派遣失败，但当天不该被锁死；
+7. 没有可派的商旅时派遣失败，但当天不该被锁死；
+8. 派遣成功时才锁死当天。
+
+变异验证新增三条（M16/M17/M18/M19），把上面四处修复逐个注回源码：
+
+```
+CAUGHT M16 忽略玩家选中的商旅（面板上的选择完全不起作用）
+CAUGHT M17 正在谈生意的商旅也能被派走（把玩家自己的生意搅黄）
+CAUGHT M18 自动选人时不做任何资格过滤（情报贩子被派去跑腿）
+CAUGHT M19 失败也锁世界（点一下失败的按钮，当天就被锁死）
+```
+
+派遣变异验证因此从 15/15 变成 **19/19**。
+
+另外在 `tools/audit/verify-claims.mjs` 里补了六条**源码级**断言（D7-1～6）：
+
+| 断言 | 钉住的东西 |
+| --- | --- |
+| D7-1 | `sendDispatch` 存在 |
+| D7-2 | 签名必须带 `npcId`（只接 `destination` = 选择被丢掉） |
+| D7-3 | 必须真的调 `_findNpc(npcId)`（收下却不用 = 没接） |
+| D7-4 | 函数体内必须出现 `activated`（正在谈生意的不能派走） |
+| D7-5 | 第一次 `_lockWorld()` 必须晚于「资金不足」那句失败提示 |
+| D7-6 | 回归文件存在 |
+
+> D7-5 值得单说一句：它是**位置**断言，不是存在性断言。
+> 光断言「函数里有 `_lockWorld()`」毫无意义 —— 修复前后都有。
+> 真正要钉的是**它在哪儿**：必须在所有失败出口之后。
+> 这类「顺序错了」的缺陷，只有位置断言抓得住。
+
+> M19 第一版写错了：把 `_lockWorld()` 插在注释行之后，
+> 而那个位置本来就在所有失败返回之后 —— 变异是**空操作**，
+> 注入的缺陷根本没生效，测试自然还是绿的。
+> 这是变异验证自己撒的谎，和 D6 一个味道：
+> **注入必须真的改变行为，否则「全部抓住」是假的。**
+> 后来把注入点挪到函数头（`if (state.gameOver) return;` 之后），
+> M19 才真正被抓出来。
+
+### 为什么这类缺陷特别难被发现
+
+D7 和 D5、D6 是同一个家族，但更难一层：
+
+- **D5/D6 是「声明在一处，实现在另一处」**；
+- **D7 是「契约在一处，实现在另一处」** ——
+  UI 和 shop 是两个模块、两份代码，靠一个**没人写测试的函数参数**连接。
+  参数名对得上（`onSend` → `sendDispatch`），
+  但**少传一个**这件事在任何签名检查里都不会报错。
+
+它安静到什么程度：
+
+- 功能「能用」 —— 总有人会被派走；
+- 断言全绿 —— 没有任何一条检查「派的到底是谁」；
+- 界面自洽 —— chip 有选中态，事件有绑定，参数也传了，
+  只是到了 shop 那一层被丢掉。
+
+**跨模块的隐式契约，是断言最容易漏掉的地方。**
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（181 项）
-npm test             # 回归测试：153 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 换界回归 8 + 机器世界归属回归 8 + 派遣回归 26 + 派遣稀有门槛 17 + 派遣经济 21 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1 + 构建孤儿捞回 1）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（188 项）
+npm test             # 回归测试：161 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 换界回归 8 + 机器世界归属回归 8 + 派遣回归 26 + 派遣稀有门槛 17 + 派遣经济 21 + 派遣目标选择 8 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1 + 构建孤儿捞回 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
 npm run test:npc      # 只跑 NPC 判定回归：8 项（鉴定/后果/声望/报价/延迟反馈/退化随机源/队列与存档绑定）
@@ -1527,8 +1700,8 @@ npm run test:world   # 只跑换界回归：8 项（不销毁货物/退回仓库
 npm run test:world:mutation # 换界变异验证：把 7 个缺陷逐个注回源码，确认回归测试全部失败（7/7）
 npm run test:machine  # 只跑机器世界归属回归：8 项（带世界归属/别界开工被拒/双向生效/本界照常/UI 标记/老档同界/老档别界/买入检查）
 npm run test:machine:mutation # 机器世界归属变异验证：把 7 个缺陷逐个注回源码，确认回归测试全部失败（7/7）
-npm run test:dispatch  # 只跑派遣回归：26 + 17 + 21 项（UI 不写死档位/界门双向/文案跟档位走/定价规则/件数守恒）
-npm run test:dispatch:mutation # 派遣变异验证：把 15 个缺陷逐个注回源码，确认回归测试全部失败（15/15）
+npm run test:dispatch  # 只跑派遣回归：26 + 17 + 21 + 8 项（UI 不写死档位/界门双向/文案跟档位走/定价规则/件数守恒/选中谁派谁）
+npm run test:dispatch:mutation # 派遣变异验证：把 19 个缺陷逐个注回源码，确认回归测试全部失败（19/19）
 npm run test:dispatch:econ # 只跑派遣经济回归：21 项（费率上限 / 距离单调 / 跨世界对标 / 稀有门槛兑现）
 npm run test:dispatch:econ:mutation # 派遣经济变异验证：把 15 个经济规则逐个注回源码，确认全部失败（15/15）
 npm run test:market   # 只跑行情系数回归：6 项（冲击只加一次/叠加相加/断供复原/长期不漂移/跨存档）

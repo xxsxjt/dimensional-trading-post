@@ -238,6 +238,7 @@ const TEST_SUITES = [
   ['dispatch', 'tests/dispatch-rules.cjs'],
   ['dispatch-rare-gate', 'tests/dispatch-rare-gate.cjs'],
   ['dispatch-econ', 'tests/dispatch-econ.cjs'],
+  ['dispatch-dispatch-target', 'tests/dispatch-dispatch-target.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -273,6 +274,7 @@ ok('派遣稀有门槛回归文件存在', existsSync(resolve(root, 'tests/dispa
 ok('派遣经济回归文件存在', existsSync(resolve(root, 'tests/dispatch-econ.cjs')));
 ok('派遣经济模型文件存在', existsSync(resolve(root, 'tests/dispatch-econ-model.cjs')));
 ok('派遣经济变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-econ-mutation.cjs')));
+ok('派遣目标选择回归文件存在', existsSync(resolve(root, 'tests/dispatch-dispatch-target.cjs')));
 
 /* 6b-8. 报告里写的「派遣回归 N 项」必须和实际跑出来的条数一致。
  *
@@ -292,6 +294,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/dispatch-rules.cjs', 26],
   ['tests/dispatch-rare-gate.cjs', 17],
   ['tests/dispatch-econ.cjs', 21],
+  ['tests/dispatch-dispatch-target.cjs', 8],
   ['tests/market-rules.cjs', 6],
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
@@ -920,6 +923,42 @@ if (orphanScanIdx >= 0) {
 }
 ok('D6 孤儿产物捞回回归文件存在',
   existsSync(resolve(root, 'tests/build-orphan-salvage.cjs')));
+
+/* 6b-9. 缺陷 D7：派遣目标选择（UI 选了谁，shop 就得派谁）
+ *
+ * UI 侧的 renderDispatchPanel 会把选中的商旅 id 当第二个参数传给 onSend，
+ * 但 shop 侧的 sendDispatch 曾经只接第一个参数 ——
+ * 面板上的选择被静默丢掉，实际派出的是列表里的第一个空闲商旅。
+ *
+ * 而且注释里写着「还没被接待过的」，代码里却从来没写过 activated 这条判断；
+ * _lockWorld() 还写在函数第一行，于是失败的派遣也会把当天锁死。
+ *
+ * 这里做源码级断言，把这几条钉住。 */
+const shopSrc = src('src/wasteland-shop.js');
+const dispatchIdx = shopSrc.indexOf('function sendDispatch');
+ok('D7 sendDispatch 存在', dispatchIdx >= 0, '派遣入口函数必须能找到');
+if (dispatchIdx >= 0) {
+  const fn = shopSrc.slice(dispatchIdx, dispatchIdx + 2600);
+  ok('D7 sendDispatch 必须接收玩家选中的商旅 id',
+    /function\s+sendDispatch\s*\(\s*destination\s*,\s*npcId\s*\)/.test(fn),
+    '签名必须带 npcId；只接 destination 会把 UI 传来的选择整个丢掉');
+  ok('D7 sendDispatch 必须真的用上 npcId',
+    /_findNpc\s*\(\s*npcId\s*\)/.test(fn),
+    '参数收下却不用，等于没接 —— 必须用 npcId 去查那位商旅');
+  ok('D7 已接待（activated）的商旅不能被派走',
+    /activated/.test(fn),
+    '把正在柜台上谈生意的商旅派去跑腿，等于把玩家自己的买卖搅黄');
+  /* 精确校验：函数体内第一次出现 _lockWorld() 的位置，
+   * 必须晚于「资金不足」那句失败提示 —— 也就是说锁在检查之后。 */
+  const lockAt = fn.indexOf('_lockWorld()');
+  const failGold = fn.indexOf('资金不足');
+  ok('D7 失败路径不得锁死当天',
+    lockAt >= 0 && failGold >= 0 && lockAt > failGold,
+    '_lockWorld() 写在函数第一行时，体力不足 / 资金不足 / 位满 / 无商旅 ' +
+    '这四种失败都会把当天锁死 —— 玩家什么都没做成，当天却废了');
+}
+ok('D7 派遣目标选择回归文件存在',
+  existsSync(resolve(root, 'tests/dispatch-dispatch-target.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

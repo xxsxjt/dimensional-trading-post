@@ -58,11 +58,11 @@
       "gzipBytes": 20841
     },
     "src/wasteland-shop.js": {
-      "path": "src/wasteland-shop.c1272eb90779.js",
-      "sourceSha256": "ddffb1b09de8621bafb85238d2d7592e8eca64e3d4288f932b2e42aa667da192",
-      "sha256": "c1272eb9077997290245726559e66db2ee5cc01cd8ca157a073aa1276c9fdfaa",
-      "bytes": 161808,
-      "gzipBytes": 51949
+      "path": "src/wasteland-shop.71543c5c9a65.js",
+      "sourceSha256": "164744efc8a10253979f542eac11f0ff32b5fe56e9de54e2e9e10c1f626d8fe4",
+      "sha256": "71543c5c9a65cda8bb20b667eeb1c451f2cc751d90359057f96bf51062ba9c7e",
+      "bytes": 164116,
+      "gzipBytes": 52789
     },
     "assets/items/acetone.png": {
       "path": "assets/items/acetone.c3a4a4c6228e.png",
@@ -1873,9 +1873,9 @@
     "wasteland.html": {
       "path": "wasteland.html",
       "sourceSha256": "9271da8aaa369da63689d23bd737a14663ed172f29641212c9ad25af5ffcc44a",
-      "sha256": "7d8d5fad96d2807ab9703860fc9831ba1ef60e228c27a32d4a00a6e262624199",
+      "sha256": "0336c9b28601cc6fb77063f4087f8156c435347e5591ac129cfab32b23db09e1",
       "bytes": 11131,
-      "gzipBytes": 4211
+      "gzipBytes": 4212
     }
   },
   "aliases": {},
@@ -2029,6 +2029,11 @@
       "path": "src/wasteland-shop.fa31b72302c6.js",
       "sha256": "fa31b72302c6ecd491a6888b34cb6746528650b347ef49b3f4d3865fe3ea22cf",
       "bytes": 161808
+    },
+    "src/wasteland-shop.c1272eb90779.js": {
+      "path": "src/wasteland-shop.c1272eb90779.js",
+      "sha256": "c1272eb9077997290245726559e66db2ee5cc01cd8ca157a073aa1276c9fdfaa",
+      "bytes": 161808
     }
   },
   "previousFiles": {
@@ -2180,6 +2185,11 @@
     "src/wasteland-shop.fa31b72302c6.js": {
       "path": "src/wasteland-shop.fa31b72302c6.js",
       "sha256": "fa31b72302c6ecd491a6888b34cb6746528650b347ef49b3f4d3865fe3ea22cf",
+      "bytes": 161808
+    },
+    "src/wasteland-shop.c1272eb90779.js": {
+      "path": "src/wasteland-shop.c1272eb90779.js",
+      "sha256": "c1272eb9077997290245726559e66db2ee5cc01cd8ca157a073aa1276c9fdfaa",
       "bytes": 161808
     }
   }
