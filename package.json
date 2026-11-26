@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node tests/wasteland-shop.cjs && node tests/soak.cjs && node tests/npc-rules.cjs && node tests/faction-rules.cjs && node tests/world-switch-rules.cjs && node tests/machine-world-rules.cjs && node tests/dispatch-rules.cjs && node tests/dispatch-rare-gate.cjs && node tests/dispatch-econ.cjs && node tests/dispatch-dispatch-target.cjs && node tests/dispatch-away-merchant.cjs && node tests/dispatch-power-cap.cjs && node tests/market-rules.cjs && node tests/auction-rules.cjs && node tests/auction-week.cjs && node tests/auction-reserve.cjs && node tests/facility-purifier-filter.cjs && node tests/loop-rules.cjs && node tests/fuzz.cjs && node tests/build-retention.cjs && node tests/build-orphan-salvage.cjs",
+    "test": "node tests/wasteland-shop.cjs && node tests/soak.cjs && node tests/npc-rules.cjs && node tests/faction-rules.cjs && node tests/world-switch-rules.cjs && node tests/machine-world-rules.cjs && node tests/dispatch-rules.cjs && node tests/dispatch-rare-gate.cjs && node tests/dispatch-econ.cjs && node tests/dispatch-dispatch-target.cjs && node tests/dispatch-away-merchant.cjs && node tests/dispatch-power-cap.cjs && node tests/market-rules.cjs && node tests/auction-rules.cjs && node tests/auction-week.cjs && node tests/auction-reserve.cjs && node tests/facility-purifier-filter.cjs && node tests/facility-storage-repack.cjs && node tests/loop-rules.cjs && node tests/fuzz.cjs && node tests/build-retention.cjs && node tests/build-orphan-salvage.cjs",
     "test:unit": "node tests/wasteland-shop.cjs",
     "test:soak": "node tests/soak.cjs",
     "test:npc": "node tests/npc-rules.cjs",
@@ -30,6 +30,8 @@
     "test:auction:reserve:mutation": "node tests/auction-reserve-mutation.cjs",
     "test:facility": "node tests/facility-purifier-filter.cjs",
     "test:facility:mutation": "node tests/facility-purifier-mutation.cjs",
+    "test:storage": "node tests/facility-storage-repack.cjs",
+    "test:storage:mutation": "node tests/facility-storage-mutation.cjs",
     "test:loop": "node tests/loop-rules.cjs",
     "test:loop:mutation": "node tests/loop-mutation.cjs",
     "test:fuzz": "node tests/fuzz.cjs",

@@ -367,8 +367,40 @@
     return true;
   }
 
+  /* 清掉某件货占着的**所有**格位。
+   *
+   * 缺陷 D12：以前 remove() 只清 grid.items[id] 记录的那个坐标
+   * （d.w × d.h 那几格）。但如果同一件货被 place 过两次
+   * （仓储扩容时按 cells 收集导致），第一份占的格子就成了僵尸格：
+   * 它们挡着 canPlace，却永远清不掉 —— 仓库越用越堵。
+   * 所以这里扫全表按 id 清，不看坐标。 */
+  function _clearCellsOf(grid,itemId){
+    for(var i=0;i<grid.cells.length;i++){
+      if(grid.cells[i]===itemId)grid.cells[i]=null;
+    }
+  }
+
   function place(grid,item,x,y){
-    if(!canPlace(grid,item,x,y))return false;
+    // 同一件货重复摆放前，先把它原来的占位清干净，
+    // 否则旧位置会留下清不掉的僵尸格（缺陷 D12）。
+    // 先腾地方再判能不能放：新位置可能和旧位置重叠，
+    // 不腾开的话 canPlace 会误判成「放不下」。
+    // 放不下就把旧位置原样装回去，不能凭空弄丢这件货。
+    var prev = grid.items[item.id];
+    if(prev){
+      _clearCellsOf(grid,item.id);
+      delete grid.items[item.id];
+    }
+    if(!canPlace(grid,item,x,y)){
+      if(prev){
+        grid.items[item.id]=prev;
+        var pd=_itemDims(item), px=prev.x, py=prev.y;
+        for(var pdy=0;pdy<pd.h;pdy++)
+          for(var pdx=0;pdx<pd.w;pdx++)
+            grid.cells[_cellIdx(grid,px+pdx,py+pdy)]=item.id;
+      }
+      return false;
+    }
     var d=_itemDims(item);
     for(var dy=0;dy<d.h;dy++)
       for(var dx=0;dx<d.w;dx++)
@@ -379,11 +411,11 @@
 
   function remove(grid,itemId){
     var entry=grid.items[itemId];
+    // 即使 items 里已经没有记录，也要把残留的占位清掉，
+    // 否则那几格会被永久占用（僵尸格，缺陷 D12）。
+    _clearCellsOf(grid,itemId);
     if(!entry)return null;
-    var item=entry.item, d=_itemDims(item), x=entry.x, y=entry.y;
-    for(var dy=0;dy<d.h;dy++)
-      for(var dx=0;dx<d.w;dx++)
-        grid.cells[_cellIdx(grid,x+dx,y+dy)]=null;
+    var item=entry.item;
     delete grid.items[itemId];
     return item;
   }

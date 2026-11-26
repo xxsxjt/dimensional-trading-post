@@ -749,22 +749,130 @@
     return 8 + Math.max(0, Math.min(3, level));
   }
 
+  /* 仓库完整性修复（缺陷 D12 的存量存档修复）。
+   *
+   * 修完 _applyStorageCapacity 之后，新存档不会再产生僵尸格，
+   * 但**已经存过档**的坏存档还在：cells 里有一堆清不掉的占位，
+   * 待领区里还留着跟仓库同 id 的重复副本（那是可以卖两次的印钞机）。
+   * 读档时顺手修一次：
+   *   1. 按 items 表把该占的格子重新标一遍，多余的占位（僵尸格）清成 null；
+   *   2. 清掉待领区里跟仓库重复的 id —— 仓库那份是原件，待领区那份是扩容时
+   *      复制出来的假货，留下就是白送玩家一次白嫖。
+   *
+   * 幂等：修完之后再跑一次不会有任何改动。
+   *
+   * 返回 {zombie:清掉的僵尸格数, dupes:清掉的重复副本数}，没有就返回 null。 */
+  function _repairGridIntegrity() {
+    if (!state.grid || !state.grid.cells || !state.grid.items) return null;
+    var grid = state.grid;
+    var cols = grid.cols, rows = grid.rows;
+    if (!cols || !rows || grid.cells.length !== cols * rows) return null;
+
+    // 1) 重算每一格「应该」被谁占
+    var expect = new Array(cols * rows);
+    for (var i = 0; i < expect.length; i++) expect[i] = null;
+    var zombie = 0, moved = 0;
+    Object.keys(grid.items).forEach(function (id) {
+      var entry = grid.items[id];
+      if (!entry || !entry.item) { delete grid.items[id]; return; }
+      var d = entry.item.rotated ? {w: entry.item.h, h: entry.item.w}
+                                  : {w: entry.item.w, h: entry.item.h};
+      var x = entry.x || 0, y = entry.y || 0;
+      // 越界或尺寸异常 → 这条记录本身是坏的，直接丢弃它的占位
+      if (x < 0 || y < 0 || x + d.w > cols || y + d.h > rows) {
+        delete grid.items[id];
+        zombie++;
+        return;
+      }
+      for (var dy = 0; dy < d.h; dy++) {
+        for (var dx = 0; dx < d.w; dx++) {
+          var idx = (y + dy) * cols + (x + dx);
+          if (expect[idx] !== null && expect[idx] !== id) {
+            // 两件货抢同一格：留先来的那条，另一条挪走
+            moved++;
+            continue;
+          }
+          expect[idx] = id;
+        }
+      }
+    });
+
+    // 2) 把 cells 对齐到 expect，多余的（僵尸格）清掉
+    var changed = false;
+    for (var c = 0; c < grid.cells.length; c++) {
+      if (grid.cells[c] !== expect[c]) {
+        if (grid.cells[c] !== null) zombie++;
+        grid.cells[c] = expect[c];
+        changed = true;
+      }
+    }
+
+    // 3) 待领区里跟仓库同 id 的重复副本 —— 扩容时复制出来的假货，丢掉
+    var dupes = 0;
+    if (Array.isArray(state.returnedLoot)) {
+      var kept = [];
+      state.returnedLoot.forEach(function (item) {
+        if (item && item.id && grid.items[item.id]) { dupes++; return; }
+        kept.push(item);
+      });
+      if (dupes) { state.returnedLoot = kept; changed = true; }
+    }
+
+    if (!changed) return null;
+    if (!state.todayEvents) state.todayEvents = [];
+    state.todayEvents.push(_makeEvent('storage_repair', '仓库重新整理了一遍',
+      '清掉了 ' + zombie + ' 个占位异常、' + dupes + ' 件重复的货。'));
+    return {zombie: zombie, dupes: dupes};
+  }
+
   // 按等级把仓库补到应有的排数；幂等，读档时也会调用以修复旧存档。
+  //
+  // 缺陷 D12：这里以前是**扫 cells 数组**来收集要搬的货：
+  //   for (y) for (x) { var id = oldGrid.cells[y*cols+x]; if (id) items.push(...); }
+  //
+  // 但 cells 里一件 **1×2 的货占两格**，那个 id 会出现**两次** ——
+  // 于是同一件货被 push 两遍、place 两遍：
+  //   · 第二次 place 时第一份已经占住位置 → place 返回 false → 落进 overflow
+  //   · overflow 里于是出现同一件货的第二份引用，而仓库里还留着第一份
+  //   → **同一件货同时存在于仓库和待领区**，玩家可以卖两次（凭空造钱）
+  //   · 而且 cells 里残留了大量僵尸格，仓库越扩容越堵
+  //
+  // 实测（12 件 1×2 的货，仓库 10×8）：
+  //   仓储 LV1（10×9）：僵尸格 24，可放空格 42（原本应是 66）
+  //   仓储 LV2（10×10）：僵尸格 72，可放空格 4
+  //   仓储 LV3（10×11）：僵尸格 80，**10 件货同时出现在仓库和待领区**
+  //
+  // 修法：**按 items 表收，不看 cells**。
+  // items 是「一件货一条记录」的权威表，每件货天然只会被收一次；
+  // cells 是「格位 → 货 id」的映射，同一件多格货在它里面出现多次。
+  // 收集时要按格位顺序保证打包稳定，所以先把 items 排序（按 y 再按 x）。
   function _applyStorageCapacity() {
     var targetRows = _storageRows();
     if (state.grid && state.grid.rows === targetRows) return false;
     var oldGrid = state.grid;
     var items = [];
-    // 按格位顺序取出，保证重新摆放时打包稳定
-    for (var y = 0; y < oldGrid.rows; y++) {
-      for (var x = 0; x < oldGrid.cols; x++) {
-        var id = oldGrid.cells[y * oldGrid.cols + x];
-        if (id && oldGrid.items[id]) items.push(oldGrid.items[id].item);
-      }
-    }
+    /* 按格位顺序取出，保证重新摆放时打包稳定。
+     *
+     * 权威来源是 oldGrid.items（每件货一条记录），**不是** oldGrid.cells。
+     * cells 里一件 1×2 的货会出现两次，用它收集就会把同一件货收两遍 ——
+     * 详见上面缺陷 D12 的说明。
+     *
+     * 排序键用 (y, x)：先按行再按列，和原来扫 cells 的顺序一致，
+     * 所以打包结果与修之前对单格货完全相同（不会改变玩家的仓库布局）。 */
+    var ids = Object.keys(oldGrid.items || {});
+    ids.forEach(function (id) {
+      var entry = oldGrid.items[id];
+      if (entry && entry.item) items.push({item: entry.item, x: entry.x, y: entry.y});
+    });
+    items.sort(function (a, b) {
+      if (a.y !== b.y) return a.y - b.y;
+      return a.x - b.x;
+    });
+    var ordered = items.map(function (e) { return e.item; });
+
     var newGrid = Core.createGrid(oldGrid.cols, targetRows);
     var overflow = [];
-    items.forEach(function (item) {
+    ordered.forEach(function (item) {
       var placed = false;
       for (var r = 0; r < newGrid.rows && !placed; r++) {
         for (var c = 0; c < newGrid.cols && !placed; c++) {
@@ -3650,6 +3758,8 @@
     if (!state.baseState.freeGrid) state.baseState.freeGrid = Core.createGrid(4, 3);
     // 仓储等级可能高于当前格数（旧存档或手工改档），读档时补足
     _applyStorageCapacity();
+    // 仓库完整性修复（缺陷 D12 的存量存档修复）
+    _repairGridIntegrity();
     if (!state.playerSkill || typeof state.playerSkill.identify !== 'object' ||
         Array.isArray(state.playerSkill.identify)) {
       state.playerSkill = {

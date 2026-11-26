@@ -246,6 +246,7 @@ const TEST_SUITES = [
   ['auction-week', 'tests/auction-week.cjs'],
   ['auction-reserve', 'tests/auction-reserve.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
+  ['facility-storage', 'tests/facility-storage-repack.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
@@ -308,6 +309,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-week.cjs', 10],
   ['tests/auction-reserve.cjs', 10],
   ['tests/facility-purifier-filter.cjs', 20],
+  ['tests/facility-storage-repack.cjs', 16],
   ['tests/loop-rules.cjs', 9],
   ['tests/fuzz.cjs', 1],
   ['tests/build-retention.cjs', 1],
@@ -1189,6 +1191,71 @@ ok('D11 净水器回归文件存在',
   existsSync(resolve(root, 'tests/facility-purifier-filter.cjs')));
 ok('D11 净水器变异测试文件存在',
   existsSync(resolve(root, 'tests/facility-purifier-mutation.cjs')));
+
+/* 6b-13. 缺陷 D12：仓储扩容不得把多格物品重复收集
+ *
+ * 仓库有两套表示：
+ *   grid.items  「一件货一条记录」的权威表
+ *   grid.cells  「格位 → 货 id」的数组，一件 1×2 的货在它里面出现**两次**
+ *
+ * 旧实现在扩容时按 **cells** 扫着收集，于是同一件货被收两遍：
+ *   · 第二遍 place 放不下 → 这份货落进 overflow → 进了待领区
+ *   → 同一件货同时存在于仓库和待领区 → 可以卖两次（凭空造钱）
+ *   · 第一份的占位变成僵尸格 → 挡着 canPlace 却永远清不掉
+ *
+ * 修法：按 items 表收（每件只收一次），并且读档时修一次已经坏掉的存档。
+ */
+const capacityIdx = shopSrc.indexOf('function _applyStorageCapacity');
+ok('D12 扩容函数必须存在', capacityIdx >= 0,
+  '_applyStorageCapacity 是仓储升级时搬货的入口');
+if (capacityIdx >= 0) {
+  const capFn = shopSrc.slice(capacityIdx, shopSrc.indexOf('\n  }', capacityIdx));
+  ok('D12 扩容收集必须以 items 表为权威来源',
+    /Object\.keys\s*\(\s*oldGrid\.items/.test(capFn) &&
+    !/oldGrid\.cells\s*\[/.test(capFn),
+    'cells 里一件 1×2 的货出现两次 —— 用它收集就会把同一件货收两遍');
+  ok('D12 扩容收集必须按格位顺序排序（打包稳定）',
+    /items\.sort\s*\(/.test(capFn) && /a\.y\s*!==\s*b\.y/.test(capFn),
+    '排序键用 (y, x)，跟原来扫 cells 的顺序一致，布局才不会乱');
+  ok('D12 扩容不许把同一件货塞进新格架两次',
+    !/oldGrid\.cells\s*\[/.test(capFn),
+    '重复收集 = 重复摆放 = 僵尸格 + 待领区里多出一份可卖的假货');
+}
+ok('D12 读档时必须修一次仓库完整性',
+  /_repairGridIntegrity\s*\(\s*\)/.test(shopSrc),
+  '已经坏掉的存档还在：cells 里有清不掉的占位，待领区里有跟仓库同 id 的副本');
+const repairIdx = shopSrc.indexOf('function _repairGridIntegrity');
+ok('D12 仓库修复函数必须存在', repairIdx >= 0,
+  '存量存档要有人修 —— 新存档不产生坏数据不代表旧存档是好的');
+if (repairIdx >= 0) {
+  const repFn = shopSrc.slice(repairIdx, shopSrc.indexOf('\n  }', repairIdx));
+  ok('D12 仓库修复必须重算每一格该被谁占',
+    /expect\[/.test(repFn) && /grid\.cells\[c\]\s*=\s*expect\[c\]/.test(repFn),
+    '按 items 表重算 footprint，多余的占位（僵尸格）清成 null');
+  ok('D12 仓库修复必须丢掉待领区里的重复副本',
+    /grid\.items\[item\.id\]/.test(repFn),
+    '待领区里跟仓库同 id 的那份是扩容复制出来的假货 —— 留着就是印钞机');
+}
+const coreSrc = src('src/wasteland-core.js');
+const placeIdx = coreSrc.indexOf('function place(');ok('D12 Core.place 必须存在', placeIdx >= 0);
+if (placeIdx >= 0) {
+  const placeFn = coreSrc.slice(placeIdx, coreSrc.indexOf('\n  }', placeIdx));
+  ok('D12 Core.place 重复摆放前必须腾掉旧位置',
+    /_clearCellsOf\s*\(\s*grid\s*,\s*item\.id\s*\)/.test(placeFn),
+    '同一件货摆两次，旧位置就是僵尸格 —— 挡着 canPlace 却永远清不掉');
+}
+const removeIdx = coreSrc.indexOf('function remove(');
+ok('D12 Core.remove 必须存在', removeIdx >= 0);
+if (removeIdx >= 0) {
+  const removeFn = coreSrc.slice(removeIdx, coreSrc.indexOf('\n  }', removeIdx));
+  ok('D12 Core.remove 必须扫全表清占位，不能只清登记坐标',
+    /_clearCellsOf\s*\(\s*grid\s*,\s*itemId\s*\)/.test(removeFn),
+    '只清登记坐标的话，之前重复摆放留下的残留占位永远清不掉');
+}
+ok('D12 仓储扩容回归文件存在',
+  existsSync(resolve(root, 'tests/facility-storage-repack.cjs')));
+ok('D12 仓储扩容变异测试文件存在',
+  existsSync(resolve(root, 'tests/facility-storage-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——
