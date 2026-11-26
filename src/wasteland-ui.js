@@ -1009,8 +1009,24 @@
     container.appendChild(picker);
 
     // 选去处
+    //
+    // 档位列表必须**完全由传入的 tiers 决定**。
+    //
+    // 以前这里写死了 `['suburb', 'midrange', 'deepzone']`，
+    // 于是宗门遗迹（sect_ruins）被整个丢掉了 ——
+    // core 里有它的战利品表，shop 里按世界把它放出来，
+    // 只有 UI 不知道它存在。结果是：
+    //   · 宗门界最强的档位永远派不出去（期望货值 ¤532 / 每点体力 ¤14）
+    //   · 只剩 sect_ruins 可用时，面板一个按钮都不渲染，
+    //     玩家看到一堆提示文字却哪儿也派不出去
+    // 硬编码一份「已知档位名单」= 每次新增档位都要记得改两个地方，
+    // 漏了就是静默的功能缺失。这里改成遍历传入的 tiers，
+    // 加档位只需要改 shop 那边一处。
     var destRow = el('div', {class:'wl-dispatch__dests'});
-    ['suburb', 'midrange', 'deepzone'].forEach(function (key) {
+    /* 遍历顺序要稳定：按 label 排序会让按钮顺序随文案变化，
+     * 用 key 的字母序则与定义顺序无关但可预期。 */
+    var tierKeys = Object.keys(tiers).sort();
+    tierKeys.forEach(function (key) {
       var tier = tiers[key];
       if (!tier) return;
       var affordable = (d.gold || 0) >= tier.fee;
@@ -1030,8 +1046,17 @@
       destRow.appendChild(wrap);
     });
     container.appendChild(destRow);
+    /* 提示文案必须跟着**实际渲染出来的档位**走。
+     * 以前这句话写死了「近郊…深入禁区…」，于是宗门界里
+     * 玩家读到的是三个根本不存在的档位的说明。 */
     container.appendChild(el('p', {class:'wl-dispatch__hint'},
-      '派遣是补贴：近郊风险低、收益薄；深入禁区利润高但空手概率也高，且要先付得起补给费。'));
+      tierKeys.length
+        ? '派遣是补贴：' + tierKeys.map(function (k) {
+            var t = tiers[k];
+            return t && t.label ? t.label : k;
+          }).join('、') + '；越远越贵，空手概率也越高，且要先付得起补给费。'
+        : '今天没有可派出的去处。'));
+
   }
 
   // ── Legacy: renderLootPanel ───────────────────────────────

@@ -177,7 +177,7 @@ ok('工具 recipes=20', toolNum(/"recipes":(\d+)/) === 20);
 ok('工具 machines=6', toolNum(/"machines":(\d+)/) === 6);
 ok('工具 roles=9', toolNum(/"roles":(\d+)/) === 9);
 ok('工具 contacts=5', toolNum(/"contacts":(\d+)/) === 5);
-ok('工具 tiers=4', toolNum(/"tiers":(\d+)/) === 4);
+ok('工具 tiers=5', toolNum(/"tiers":(\d+)/) === 5);
 ok('工具 categories=11', toolNum(/"categories":(\d+)/) === 11);
 
 const chM = out.match(/\[channel\] 分渠道覆盖 \{([^}]*)\}；无渠道 (\d+)/);
@@ -185,12 +185,12 @@ ok('工具 无孤儿物品', chM && Number(chM[2]) === 0, chM ? 'orphans=' + chM
 if (chM) {
   const ch = JSON.parse('{' + chM[1] + '}');
   ok('渠道 visitor=218', ch.visitor === 218, 'n=' + ch.visitor);
-  ok('渠道 dispatch=63', ch.dispatch === 63, 'n=' + ch.dispatch);
+  ok('渠道 dispatch=70', ch.dispatch === 70, 'n=' + ch.dispatch);
   ok('渠道 starter=5', ch.starter === 5, 'n=' + ch.starter);
   ok('渠道 order=15', ch.order === 15, 'n=' + ch.order);
   ok('渠道 auction=13', ch.auction === 13, 'n=' + ch.auction);
   ok('渠道 craft=26', ch.craft === 26, 'n=' + ch.craft);
-  ok('报告渠道数字与工具一致', /visitor 218 \/ dispatch 63 \/ starter 5 \/ order 15 \/ auction 13 \/ craft 26/.test(report));
+  ok('报告渠道数字与工具一致', /visitor 218 \/ dispatch 70 \/ starter 5 \/ order 15 \/ auction 13 \/ craft 26/.test(report));
 }
 ok('工具 保质期 54 项', toolNum(/目录带保质期 (\d+) 项/) === 54);
 ok('工具 纯度系统 30 项', toolNum(/目录带纯度系统 (\d+) 项/) === 30);
@@ -235,6 +235,7 @@ const TEST_SUITES = [
   ['faction', 'tests/faction-rules.cjs'],
   ['world-switch', 'tests/world-switch-rules.cjs'],
   ['machine-world', 'tests/machine-world-rules.cjs'],
+  ['dispatch', 'tests/dispatch-rules.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -263,6 +264,8 @@ ok('换界回归文件存在', existsSync(resolve(root, 'tests/world-switch-rule
 ok('换界变异测试文件存在', existsSync(resolve(root, 'tests/world-switch-mutation.cjs')));
 ok('机器世界归属回归文件存在', existsSync(resolve(root, 'tests/machine-world-rules.cjs')));
 ok('机器世界归属变异测试文件存在', existsSync(resolve(root, 'tests/machine-world-mutation.cjs')));
+ok('派遣回归文件存在', existsSync(resolve(root, 'tests/dispatch-rules.cjs')));
+ok('派遣变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-mutation.cjs')));
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
@@ -508,6 +511,169 @@ ok('A5-1 新建的机器都带着世界归属',
   Core.createMachine('smelter').world === 'wasteland_nuclear' &&
     Core.createMachine('alchemy_furnace').world === 'xianxia_sect',
   'createMachine 必须把 world 落到实例上');
+
+/* 6b-6. 派遣子系统这一轮修的几处（缺陷 D1–D4）。
+ *
+ * D1 UI 把派遣档位写死了
+ *    renderDispatchPanel 里写的是
+ *      ['suburb', 'midrange', 'deepzone'].forEach(...)
+ *    于是 sect_ruins（宗门遗迹）被整个丢掉 ——
+ *    core 里有它的战利品表，shop 里按世界把它放进 usableTiers，
+ *    只有 UI 不知道它存在。宗门界最强的档位永远派不出去；
+ *    只剩 sect_ruins 可用时，面板一个按钮都不渲染。
+ *
+ * D2 界门只开了一半
+ *    suburb / midrange / deepzone 没有 world 字段，
+ *    被 shop 的 `if (!t.world || ...)` 判成「通用档位」，
+ *    宗门界也能派队进废土 —— 宗门队能去废土捡垃圾，废土队却进不了宗门。
+ *
+ * D3 提示文案说谎
+ *    面板底部固定写着「近郊风险低…深入禁区利润高…」，
+ *    即使当前世界根本没有这些档位。
+ *
+ * D4 档位定价只看毛均值，空手率与体力成本没进公式
+ *    中距离的费率吃掉期望货值的 64%，日均净期望却**低于**近郊，
+ *    每点体力换到的钱还不到深入禁区的 1/5 —— 纯陷阱档位。
+ */
+const dispatchPanelBody = (() => {
+  const i = ui.indexOf('function renderDispatchPanel');
+  /* 面板函数很长（选人 → 选去处 → 提示），
+   * 切太短会把要去处渲染那段切掉，断言就永远匹配不到。 */
+  return i >= 0 ? stripComments(ui.slice(i, i + 9000)) : '';
+})();
+ok('D1 UI 不再写死派遣档位列表',
+  !/\[\s*['"]suburb['"]\s*,\s*['"]midrange['"]\s*,\s*['"]deepzone['"]\s*\]\s*\.forEach/.test(dispatchPanelBody),
+  '写死一份「已知档位名单」= 每次新增档位都要记得改两个地方');
+ok('D1 UI 按传入的 tiers 渲染',
+  /Object\.keys\(tiers\)\.sort\(\)/.test(dispatchPanelBody),
+  '档位列表必须完全由传入的 tiers 决定');
+ok('D3 提示文案跟着实际档位走',
+  /tierKeys\.length[\s\S]{0,400}?tierKeys\.map/.test(dispatchPanelBody),
+  '提示里不能提当前世界没有的档位');
+
+/* D2：每个档位都必须绑定唯一世界 */
+const dispatchTiers = (() => {
+  const i = shop.indexOf('var DISPATCH_TIERS = {');
+  if (i < 0) return {};
+  const open = shop.indexOf('{', i);
+  let depth = 0, end = open;
+  for (let k = open; k < shop.length; k++) {
+    if (shop[k] === '{') depth++;
+    else if (shop[k] === '}') { depth--; if (depth === 0) { end = k; break; } }
+  }
+  const out = {};
+  const re = /(\w+)\s*:\s*\{([^{}]*)\}/g;
+  let m;
+  while ((m = re.exec(shop.slice(open + 1, end)))) {
+    const inner = m[2];
+    const num = (name) => {
+      const mm = inner.match(new RegExp(name + "\\s*:\\s*([0-9.]+)"));
+      return mm ? Number(mm[1]) : null;
+    };
+    out[m[1]] = {
+      label: (inner.match(/label\s*:\s*'([^']+)'/) || [])[1] || m[1],
+      fee: num('fee'), days: num('days'), empty: num('emptyHanded'),
+      world: (inner.match(/world\s*:\s*'([^']+)'/) || [])[1] || null
+    };
+  }
+  return out;
+})();
+ok('D2 每个派遣档位都声明了自己的世界',
+  Object.keys(dispatchTiers).length > 0 &&
+    Object.values(dispatchTiers).every(t => !!t.world),
+  '没有 world 的档位会被当成通用档位，界门就是单向的');
+ok('D2 两个世界各有至少两个档位',
+  Object.values(dispatchTiers).filter(t => t.world === 'wasteland_nuclear').length >= 2 &&
+    Object.values(dispatchTiers).filter(t => t.world === 'xianxia_sect').length >= 2,
+  '快钱档 + 长途档，世界门才算开全');
+ok('D2 宗门遗迹档位存在且绑定宗门界',
+  dispatchTiers.sect_ruins && dispatchTiers.sect_ruins.world === 'xianxia_sect',
+  'D1 修好之后它必须真的能被派出去');
+
+/* D2：派队入口本身要校验世界（绕过 UI 也不许跨界） */
+const sendDispatchBody = (() => {
+  const i = shop.indexOf('function sendDispatch');
+  return i >= 0 ? stripComments(shop.slice(i, i + 1800)) : '';
+})();
+ok('D2 派队时校验档位的世界归属',
+  /tier\.world\s*&&\s*tier\.world\s*!==\s*_currentWorld\(\)/.test(sendDispatchBody));
+ok('D2 跨界派队被拒时给出可读提示',
+  /dispatch_fail[\s\S]{0,200}?'这里派不出去'/.test(sendDispatchBody));
+
+/* D4：定价规则 —— 费率占比、递增性。
+ * 期望货值 = 满载毛均值 × (1 − 空手率)，
+ * 满载毛均值由 core 的战利品表决定，这里按 SKU 单价和件数区间算。 */
+const lootTables = (() => {
+  const i = core.indexOf('var _DISPATCH_LOOT={');
+  if (i < 0) return {};
+  const open = core.indexOf('{', i);
+  let depth = 0, end = open;
+  for (let k = open; k < core.length; k++) {
+    if (core[k] === '{') depth++;
+    else if (core[k] === '}') { depth--; if (depth === 0) { end = k; break; } }
+  }
+  const out = {};
+  const re = /(\w+)\s*:\s*\{([^{}]*)\}/g;
+  let m;
+  while ((m = re.exec(core.slice(open + 1, end)))) {
+    const inner = m[2];
+    const skusM = inner.match(/skus\s*:\s*\[([^\]]*)\]/);
+    const countM = inner.match(/count\s*:\s*\[\s*([0-9]+)\s*,\s*([0-9]+)\s*\]/);
+    if (!skusM || !countM) continue;
+    out[m[1]] = {
+      skus: skusM[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean),
+      countLo: Number(countM[1]), countHi: Number(countM[2])
+    };
+  }
+  return out;
+})();
+const grossOf = (tierKey) => {
+  const spec = lootTables[tierKey];
+  if (!spec || !spec.skus.length) return null;
+  const prices = spec.skus.map(id => (CATALOG[id] || {}).basePrice).filter(p => typeof p === 'number');
+  if (!prices.length) return null;
+  const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+  return avg * ((spec.countLo + spec.countHi) / 2);
+};
+const dispatchGross = {};
+Object.keys(dispatchTiers).forEach(k => { dispatchGross[k] = grossOf(k); });
+ok('D4 每个派遣档位都有对应的战利品表',
+  Object.keys(dispatchTiers).every(k => dispatchGross[k] != null),
+  '档位和战利品表必须一一对应');
+ok('D4 战利品表里的 SKU 都存在于物品目录',
+  Object.keys(lootTables).every(function (k) {
+    return lootTables[k].skus.every(id => CATALOG[id]);
+  }));
+const costRatio = k => dispatchGross[k] == null ? null
+  : dispatchTiers[k].fee / (dispatchGross[k] * (1 - dispatchTiers[k].empty));
+ok('D4 所有档位的费率占比低于 40%',
+  Object.keys(dispatchTiers).every(k => costRatio(k) != null && costRatio(k) < 0.4),
+  '费率不能吃掉整趟收益');
+const groupBy = w => Object.keys(dispatchTiers)
+  .filter(k => dispatchTiers[k].world === w)
+  .sort((a, b) => dispatchTiers[a].days - dispatchTiers[b].days);
+for (const w of ['wasteland_nuclear', 'xianxia_sect']) {
+  const g = groupBy(w);
+  ok('D4 ' + w + ' 的快钱档比长途档更便宜（占期望货值的比例更低）',
+    g.length >= 2 && costRatio(g[0]) < costRatio(g[1]),
+    g.map(k => k + '=' + (costRatio(k) * 100).toFixed(1) + '%').join(' '));
+  ok('D4 ' + w + ' 的日均净期望随距离递增',
+    g.every((k, i) => i === 0 || dailyEV(k) > dailyEV(g[i - 1])),
+    g.map(k => k + '=' + dailyEV(k).toFixed(1)).join(' '));
+  ok('D4 ' + w + ' 的每点体力净期望随距离递增',
+    g.every((k, i) => i === 0 || staminaEV(k) > staminaEV(g[i - 1])),
+    g.map(k => k + '=' + staminaEV(k).toFixed(2)).join(' '));
+  ok('D4 ' + w + ' 的快钱档单趟收益低于长途档',
+    g.length >= 2 && dispatchGross[g[0]] < dispatchGross[g[1]],
+    g.map(k => k + '=¤' + dispatchGross[k].toFixed(1)).join(' '));
+}
+function dailyEV(k) {
+  return (dispatchGross[k] * (1 - dispatchTiers[k].empty) - dispatchTiers[k].fee) / dispatchTiers[k].days;
+}
+function staminaEV(k) {
+  const stam = 15 + dispatchTiers[k].days * 2;
+  return (dispatchGross[k] * (1 - dispatchTiers[k].empty) - dispatchTiers[k].fee) / stam;
+}
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

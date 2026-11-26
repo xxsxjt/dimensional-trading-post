@@ -37,15 +37,19 @@ const MUTATIONS = [
   {
     name: 'M2 NPC 不自己举牌（拍卖只靠玩家点击推进）',
     file: SHOP,
-    from: `    _npcAuctionBid();
-    _advanceAuctionRound();
-  }
-
-  /* 推进一拍并按需结算`,
-    to: `    _advanceAuctionRound();
-  }
-
-  /* 推进一拍并按需结算`
+    /* 要撤的是**每日推进**里的那次举牌，不是 playerBid 里的 ——
+     * 「玩家不碰面板时 NPC 也要自己举牌」这条不变式走的正是每日推进。
+     * 锚点必须带全上下文：源码是 CRLF，且这段被 A2 的
+     * 「最后一拍不抢玩家领先」包着，形状一变就匹配不上。
+     * 匹配失败的话变异会静默 SKIP，测试照样 PASS —— 假的「抓得住」。 */
+    from: `    if (!(isLastRound && auc.currentLeader === 'player')) {
+      _npcAuctionBid();
+    }
+    _advanceAuctionRound();`,
+    to: `    if (!(isLastRound && auc.currentLeader === 'player')) {
+      // 变异：NPC 不再自己举牌。
+    }
+    _advanceAuctionRound();`
   },
   {
     name: 'M3 拍卖沿用柜台压价系数（竞拍者意愿价低于起拍价）',

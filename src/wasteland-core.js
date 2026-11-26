@@ -522,6 +522,21 @@
       // 也正因为难拿，它们才撑得起宗门线的高端交易。
       skus:['spirit_sword','storage_ring','spirit_lantern','talisman_robe','formation_disc','jade_gourd','black_iron','beast_bone','thunder_stone','spirit_silk','moon_dew','spirit_wood','foundation_pill','marrow_wash_pill','sect_pass','beast_tamer_permit','ancient_coin','star_chart','spirit_tea','dried_meat'],
       count:[1,3],qualityRange:[3,5]
+    },
+    sect_outskirts:{
+      // 宗门界的「近郊」——山门外围的灵田、散修遗弃的储物袋。
+      // 没有这个档位的话，宗门界只剩宗门遗迹一个去处，
+      // 玩家既没有「今天缺钱、明天就要用」的快钱选项，
+      // 也没有不押上 5 天的稳妥选项。
+      //
+      // 货值必须和废土的「近郊」对标（满载毛均 ¤19–25）。
+      // 宗门界的专属材料单价天然更高（灵草 ¤18 起，而废土的铆钉包才 ¤12），
+      // 所以这里不能只堆宗门料 —— 得掺进山脚下也捡得到的普通货
+      // （破布、空瓶、烂木板），否则满载毛均会冲到 ¤60 以上，
+      // 「山外」直接变成宗门界最强档，把宗门遗迹压成废物。
+      skus:['herb_lingcao','cinnabar_ore','junk_cloth','empty_bottle','burnt_board',
+            'notebook','charcoal_bag','matches','junk_plastic','empty_can','plastic_bag'],
+      count:[1,3],qualityRange:[1,2]
     }
   };
 
