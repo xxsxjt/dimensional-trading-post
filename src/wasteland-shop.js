@@ -573,7 +573,11 @@
       key: 'storage', label: '仓储', icon: '📦', installCost: 240,
       upgradeCost: [460, 880],
       desc: '每级为仓库增加一排格位（10×8 → 10×9 → 10×10 → 10×11）。',
-      upkeep: '无额外维护，但需要电力在线才生效。'
+      /* 这里以前抄的是安保那行「需要电力在线才生效」，但仓储是**被动货架**：
+       * 仓库格位由等级直接推导（_storageRows），从头到尾不看电力。
+       * 而「断电就缩仓库」是不能做的 —— 缩格会把玩家的货挤出去、直接销毁。
+       * 所以这里改成如实说明：仓储不耗电，断电也照常能用。 */
+      upkeep: '无额外维护，也不耗电 —— 断电时仓库照常可用。'
     }
   };
 
@@ -592,12 +596,47 @@
     return !!(slot && slot.installed && slot.fuel > 0);
   }
 
+  // 净水器是否**真的在运转**。
+  //
+  // 契约写在 FACILITY_DEFS.water_purifier.upkeep：
+  //   「每 12 天消耗 1 个净水滤芯（¤65）；缺滤芯则停摆，补上后自动恢复。」
+  // 电力设施的说明又写着「断电时安保与净水器停摆」。
+  //
+  // 所以净水器的运行判据是**三个条件同时成立**：
+  //   装好了 + 有等级 + 通电 + 滤芯还有余量
+  //
+  // 以前这里只有一个 _facilityActive('water_purifier')，它只看
+  // 「装了 / 等级 / 通电」——**完全不看滤芯**。
+  // 于是「缺滤芯则停摆」这条契约是假的：滤芯烧光了照样提价，
+  // 滤芯纯属一件装饰品（¤65/个，12 天一个，纯烧钱）。
+  function _purifierRunning() {
+    var slot = _slot('water_purifier');
+    if (!slot || !slot.installed || slot.level <= 0) return false;
+    if (!_powerOnline()) return false;
+    if (!state.baseState.timers) return false;
+    return (state.baseState.timers.filter || 0) > 0;
+  }
+
   // 设施是否生效：电力本身只要通电即可，其余需要电力在线
   function _facilityActive(key) {
     var slot = _slot(key);
     if (!slot || !slot.installed || slot.level <= 0) return false;
     if (key === 'power') return slot.fuel > 0;
+    /* 净水器多一道滤芯关：缺滤芯就是停摆，不能再算「生效」。 */
+    if (key === 'water_purifier') return _purifierRunning();
     return _powerOnline();
+  }
+
+  // 设施状态：absent（没装）/ running（运行）/ offline（待机·断电）/ stalled（停摆·缺滤芯）
+  function _facilityStatus(key) {
+    var slot = _slot(key);
+    if (!slot || !slot.installed) return 'absent';
+    var timers = state.baseState.timers || {};
+    /* 净水器缺滤芯 → 停摆。这条比「断电」更要紧：
+     * 断电补燃料就能解决，缺滤芯得去买货，两者不能混为一谈。 */
+    if (key === 'water_purifier' && (timers.filter || 0) <= 0) return 'stalled';
+    if (!_facilityActive(key)) return 'offline';
+    return 'running';
   }
 
   // 从仓库消耗一件指定 SKU（燃料、滤芯）。只做删除，绝不凭空生成物品。
@@ -1073,17 +1112,48 @@
     }
 
     // 3) 净水器滤芯倒计时
+    //
+    // 这一段以前有三个毛病（缺陷 D11）：
+    //
+    //   ① 倒计时不看电力。断电期间净水器根本没在转，滤芯却照样一天一天被烧掉 ——
+    //      玩家断电时白白烧掉 ¤65 的货，一点好处都没换到。
+    //   ② 「停摆」只是个**事件**，不是**状态**。_purifyLootItem 只看
+    //      _facilityActive（装没装/等级/通电），完全不看滤芯 ——
+    //      于是记了「净水器停摆」之后，净水器照样提价。滤芯是纯装饰。
+    //   ③ 停摆事件**每天**都记一条，没滤芯就一直刷屏。
+    //
+    // 现在：滤芯只在净水器**真正在运转**（通电 + 还有滤芯）时才会被消耗；
+    // 停摆/恢复只在**状态翻转**的那一刻各记一条。
     var purifier = _slot('water_purifier');
     if (purifier && purifier.installed) {
-      if (state.baseState.timers.filter > 0) state.baseState.timers.filter -= 1;
-      if (state.baseState.timers.filter <= 0) {
-        if (_consumeFromWarehouse('filter_cartridge')) {
-          state.baseState.timers.filter = 12;
-        } else {
-          state.baseState.timers.filter = 0;
-          state.todayEvents.push(_makeEvent('purifier_stalled', '净水器停摆',
-            '滤芯用尽，收一些净水滤芯就能恢复运转。'));
+      var filterTimer = state.baseState.timers.filter || 0;
+      var powerOn = _powerOnline();
+
+      if (powerOn) {
+        if (filterTimer > 0) {
+          filterTimer -= 1;
+          /* 烧到头了：仓库里有滤芯就换上，重置 12 天。 */
+          if (filterTimer <= 0 && _consumeFromWarehouse('filter_cartridge')) {
+            filterTimer = 12;
+          }
+        } else if (_consumeFromWarehouse('filter_cartridge')) {
+          /* 停摆期间补了货 → 自动换上（契约：补上后自动恢复）。 */
+          filterTimer = 12;
         }
+      }
+      state.baseState.timers.filter = filterTimer;
+
+      /* 状态翻转通知：只在翻转的那一刻各记一条，不刷屏。 */
+      if (filterTimer <= 0) {
+        if (!state.baseState._purifierStalledNotified) {
+          state.baseState._purifierStalledNotified = true;
+          state.todayEvents.push(_makeEvent('purifier_stalled', '净水器停摆',
+            '滤芯用尽，净水器停摆，收一些净水滤芯（¤65）就能恢复运转。'));
+        }
+      } else if (state.baseState._purifierStalledNotified) {
+        state.baseState._purifierStalledNotified = false;
+        state.todayEvents.push(_makeEvent('purifier_resumed', '净水器恢复运转',
+          '滤芯补上了，净水器重新开始给水与化学品提价。'));
       }
     }
   }
@@ -2692,12 +2762,16 @@
   // ── 净水器：把打捞来的水与化学品提一档 ────────────────────
   // FACILITY_DEFS 里净水器一直宣称「回收战利品时给水与化学品提价」，
   // 但代码里从来没有实现过——它只是在烧滤芯。这里把它补上：
-  // 只作用于 origin==='salvage' 的水/化学品，且只在净水器通电时生效。
+  // 只作用于 origin==='salvage' 的水/化学品，且只在净水器**真正在运转**时生效。
   // 提一档上限封顶，避免叠加出离谱价格。
+  //
+  // 「真正在运转」= 装好了 + 有等级 + 通电 + **滤芯还有余量**。
+  // 以前这里只判 _facilityActive（不看滤芯），于是记了「净水器停摆」
+  // 之后照样提价 —— 契约是假的，滤芯成了纯装饰（缺陷 D11）。
   function _purifyLootItem(item) {
     if (!item) return false;
     if (item.origin !== 'salvage') return false;
-    if (!_facilityActive('water_purifier')) return false;
+    if (!_purifierRunning()) return false;
     if (item.category !== 'water' && item.category !== 'chemical') return false;
     if (item.puritySystem) {
       var p = item.purity != null ? item.purity : 3;
@@ -3100,12 +3174,17 @@
       }).length;
     });
     var activeMap = {};
-    FACILITY_ORDER.forEach(function (key) { activeMap[key] = _facilityActive(key); });
+    var statusMap = {};
+    FACILITY_ORDER.forEach(function (key) {
+      activeMap[key] = _facilityActive(key);
+      statusMap[key] = _facilityStatus(key);
+    });
 
     if (UI.renderBaseView) {
       UI.renderBaseView(baseEl, state.baseState, baseCb, {
         defs:       FACILITY_DEFS,
         active:     activeMap,
+        status:     statusMap,
         gold:       state.gold,
         fuelSkus:   FUEL_SKUS,
         fuelStock:  fuelStock

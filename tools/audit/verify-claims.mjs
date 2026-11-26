@@ -245,6 +245,7 @@ const TEST_SUITES = [
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
   ['auction-reserve', 'tests/auction-reserve.cjs'],
+  ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
@@ -306,6 +307,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
   ['tests/auction-reserve.cjs', 10],
+  ['tests/facility-purifier-filter.cjs', 20],
   ['tests/loop-rules.cjs', 9],
   ['tests/fuzz.cjs', 1],
   ['tests/build-retention.cjs', 1],
@@ -330,6 +332,8 @@ ok('拍卖整周回归文件存在', existsSync(resolve(root, 'tests/auction-wee
 ok('拍卖整周变异测试文件存在', existsSync(resolve(root, 'tests/auction-week-mutation.cjs')));
 ok('拍卖冻结款回归文件存在', existsSync(resolve(root, 'tests/auction-reserve.cjs')));
 ok('拍卖冻结款变异测试文件存在', existsSync(resolve(root, 'tests/auction-reserve-mutation.cjs')));
+ok('设施滤芯回归文件存在', existsSync(resolve(root, 'tests/facility-purifier-filter.cjs')));
+ok('设施滤芯变异测试文件存在', existsSync(resolve(root, 'tests/facility-purifier-mutation.cjs')));
 ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.cjs')));
 ok('基础玩法变异测试文件存在', existsSync(resolve(root, 'tests/loop-mutation.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
@@ -1122,6 +1126,69 @@ ok('D10 拍卖冻结款回归文件存在',
   existsSync(resolve(root, 'tests/auction-reserve.cjs')));
 ok('D10 拍卖冻结款变异测试文件存在',
   existsSync(resolve(root, 'tests/auction-reserve-mutation.cjs')));
+
+/* 6b-12. 缺陷 D11：净水器的「停摆」必须是一个状态，不是一句事件
+ *
+ * 契约写在 FACILITY_DEFS.water_purifier.upkeep：
+ *   「每 12 天消耗 1 个净水滤芯（¤65）；缺滤芯则停摆，补上后自动恢复。」
+ * 电力设施的说明又写着「断电时安保与净水器停摆」。
+ *
+ * 旧实现只判 _facilityActive（装了没装/等级/通电），完全不看滤芯：
+ *   ① 记了「净水器停摆」，提价照旧 —— 滤芯是纯装饰
+ *   ② 滤芯倒计时不看电力 —— 断电期间白烧 ¤65 的货
+ *   ③ 停摆事件每天都记一条 —— 刷屏
+ *   ④ 界面只有 installed + active 两个布尔量 —— 停摆和通电都显示「运行」
+ */
+const purifierIdx = shopSrc.indexOf('function _purifierRunning');
+ok('D11 净水器运行判据必须单独存在',
+  purifierIdx >= 0,
+  '「装好 + 有等级 + 通电 + 有滤芯」这四个条件要有一个统一判据');
+if (purifierIdx >= 0) {
+  const prfn = shopSrc.slice(purifierIdx, purifierIdx + 700);
+  ok('D11 净水器运行判据必须要求滤芯有余量',
+    /timers\.filter\s*\|\|\s*0\s*\)\s*>\s*0/.test(prfn) && /_powerOnline\s*\(\s*\)/.test(prfn),
+    '缺滤芯就是停摆 —— 判据里必须有滤芯这一项，也必须有电力这一项');
+}
+const purifyIdx = shopSrc.indexOf('function _purifyLootItem');
+ok('D11 提价必须走净水器运行判据',
+  purifyIdx >= 0 &&
+    /_purifierRunning\s*\(\s*\)/.test(shopSrc.slice(purifyIdx, purifyIdx + 500)),
+  '提价前必须判「真的在运转」，不能只看装没装、通没通电');
+ok('D11 设施生效表里净水器必须也判滤芯',
+  /key\s*===\s*'water_purifier'\s*\)\s*return\s+_purifierRunning\s*\(\s*\)/.test(shopSrc),
+  '停摆的净水器在「是否生效」表里必须是 false，否则界面照样画绿灯');
+ok('D11 设施状态必须区分「停摆」与「断电」',
+  /function\s+_facilityStatus\s*\(/.test(shopSrc) && /'stalled'/.test(shopSrc),
+  '缺滤芯和断电是两回事：前者要买货，后者要补燃料');
+const settleIdx = shopSrc.indexOf('function _settleFacilities');
+if (settleIdx >= 0) {
+  const sfn = shopSrc.slice(settleIdx, shopSrc.indexOf('\n  }', settleIdx));
+  ok('D11 滤芯倒计时必须判电力',
+    /powerOn/.test(sfn),
+    '断电期间净水器根本没在转，滤芯不许被烧掉');
+  ok('D11 停摆通知只许在状态翻转时记一次',
+    /_purifierStalledNotified/.test(sfn),
+    '没滤芯不能每天都刷一条「净水器停摆」');
+  ok('D11 停摆期间补货必须自动恢复',
+    /_consumeFromWarehouse\s*\(\s*'filter_cartridge'\s*\)/.test(sfn),
+    '契约承诺「补上后自动恢复」—— 仓库里有滤芯就必须换上');
+}
+ok('D11 界面必须能显示「停摆·缺滤芯」',
+  /停摆·缺滤芯/.test(ui),
+  '停摆和断电必须分开显示 —— 玩家看着绿灯不知道机器早就不干了');
+ok('D11 界面必须显示滤芯余量',
+  /滤芯/.test(ui),
+  '滤芯还剩几天要写在卡上，否则净水器会毫无预警地变成摆设');
+ok('D11 界面必须显示维护费说明',
+  /upkeep/.test(ui),
+  '维护费只躺在数据里的话，玩家根本不知道该买滤芯');
+ok('D11 仓储设施的说明不许宣称耗电',
+  !/storage:\s*\{[\s\S]*?upkeep:\s*'[^']*需要电力在线才生效/.test(shopSrc),
+  '仓储是被动货架（_storageRows 只看等级）—— 断电缩仓会把玩家的货挤掉销毁');
+ok('D11 净水器回归文件存在',
+  existsSync(resolve(root, 'tests/facility-purifier-filter.cjs')));
+ok('D11 净水器变异测试文件存在',
+  existsSync(resolve(root, 'tests/facility-purifier-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

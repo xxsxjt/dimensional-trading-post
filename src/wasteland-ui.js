@@ -746,6 +746,11 @@
     var opt = options || {};
     var facDefs = opt.defs || {};
     var facActive = opt.active || {};
+    /* 状态四态：absent / running / offline（待机·断电）/ stalled（停摆·缺滤芯）
+     * 旧版只有 installed + active 两个布尔量，于是「缺滤芯停摆」和「通电」，
+     * 在界面上长得一模一样 —— 都显示「运行」。玩家看着绿灯，
+     * 不知道自己的净水器其实早就不干了（缺陷 D11）。 */
+    var facStatus = opt.status || {};
     var timers = (s.timers) || {};
     var fixed = s.fixedSlots || {};
     var freeGrid = Array.isArray(s.freeGrid)
@@ -782,10 +787,14 @@
       var installed = !!slot.installed;
       var level = slot.level || 0;
       var def2 = facDefs[def.key] || {};
-      // 电力本身只要通电就算运行；其余设施被断电拖累时显示为待机
-      var running = installed && (facActive[def.key] !== false);
-      var statusColor = running ? PHOSPHOR : (installed ? AMBER : MUTED);
-      var statusLabel = !installed ? '未安装' : (running ? '运行' : '待机·断电');
+      /* 电力本身只要通电就算运行；其余设施被断电拖累时显示为待机；
+       * 净水器缺滤芯时是「停摆」，跟「断电」是两回事，必须分开显示。 */
+      var status = facStatus[def.key] || (installed ? (facActive[def.key] !== false ? 'running' : 'offline') : 'absent');
+      var running = status === 'running';
+      var statusColor = running ? PHOSPHOR : (status === 'stalled' ? AMBER : (installed ? AMBER : MUTED));
+      var statusLabel = status === 'absent' ? '未安装'
+        : (status === 'stalled' ? '停摆·缺滤芯'
+          : (status === 'offline' ? '待机·断电' : '运行'));
 
       var card = el('div', {class:'wl-facility-card'});
       var row = el('div', {class:'wl-facility-card__head'});
@@ -799,11 +808,20 @@
       info.appendChild(el('b', { style: 'display:block;font-size:11px;color:' + PHOSPHOR + ';' }, def.label));
       info.appendChild(el('span', { style: 'font-size:9px;color:' + statusColor + ';' },
         statusLabel + (level > 0 ? ' LV' + level : '') +
-        (def.key === 'power' && installed ? ' · 燃料 ' + (slot.fuel || 0) + ' 天' : '')));
+        (def.key === 'power' && installed ? ' · 燃料 ' + (slot.fuel || 0) + ' 天' : '') +
+        /* 滤芯余量要写在脸上：玩家得知道净水器还剩几天就要停，
+         * 否则它会毫无预警地从一个提供提价的设施变成一个纯烧钱的摆设。 */
+        (def.key === 'water_purifier' && installed
+          ? ' · 滤芯 ' + (timers.filter || 0) + ' 天' : '')));
       row.appendChild(info);
       card.appendChild(row);
 
       if (def2.desc) card.appendChild(el('p', {class:'wl-facility-card__desc'}, def2.desc));
+      /* 维护费说明也要摆在脸上。
+       * 以前 upkeep 只躺在 FACILITY_DEFS 里，界面从来没显示过 ——
+       * 于是「每 12 天消耗 1 个净水滤芯」这条契约玩家根本看不到，
+       * 净水器悄悄变成摆设他也不知道（缺陷 D11）。 */
+      if (def2.upkeep) card.appendChild(el('p', {class:'wl-facility-card__desc'}, '维护：' + def2.upkeep));
 
       var actions = el('div', {class:'wl-facility-card__actions'});
       if (!installed) {
