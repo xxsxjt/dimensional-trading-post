@@ -227,6 +227,37 @@ const MUTATIONS = [
     from: crlf(`      btn.disabled    = npc.activated || npc.dispatched;`),
     to:   crlf(`      // 变异：fallback 不看 dispatched —— 出远门的人还能被接待。
       btn.disabled    = npc.activated;`)
+  },
+  /* ══ 缺陷 D9：断电时名额必须收缩 ═════════════════════════════ */
+  {
+    name: 'M23 名额只看 installed 不看 fuel（断电后名额仍是 1+等级）',
+    file: SHOP,
+    from: crlf(`  function _dispatchCap() {
+    var slot = _slot('power');
+    if (!slot || !slot.installed) return 1;
+    /* 断电：名额降回 1 队。 */
+    if (!_powerOnline()) return 1;
+    return 1 + (slot.level || 0);
+  }`),
+    to:   crlf(`  function _dispatchCap() {
+    var slot = _slot('power');
+    // 变异：只看 installed —— 断电后名额照旧。
+    var level = (slot && slot.installed) ? (slot.level || 0) : 0;
+    return 1 + level;
+  }`)
+  },
+  {
+    name: 'M24 燃料耗尽的提示谎报名额已收缩（文案说降回 1 队，实际没有）',
+    file: SHOP,
+    from: crlf(`        if (power.fuel === 0) {
+          state.todayEvents.push(_makeEvent('power_offline', '电力耗尽',
+            '燃料用尽，安保与净水器停止工作，派遣名额降回 1 队。记得补充燃料。'));
+        }`),
+    to:   crlf(`        if (power.fuel === 0) {
+          // 变异：提示说名额降回 1 队，实际名额没变 —— 文案在骗人。
+          state.todayEvents.push(_makeEvent('power_offline', '电力耗尽',
+            '燃料用尽，安保与净水器停止工作。记得补充燃料。'));
+        }`)
   }
 ];
 
@@ -247,7 +278,7 @@ function restoreAll() {
  * 以前只跑前者。缺陷 D5 藏在后者的视野里 ——
  * 定��规则的模型不算稀有门槛，所以它对「门槛没了」完全无感。
  * 现在两套都跑，缺一不可。 */
-const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs', 'dispatch-dispatch-target.cjs', 'dispatch-away-merchant.cjs'];
+const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs', 'dispatch-dispatch-target.cjs', 'dispatch-away-merchant.cjs', 'dispatch-power-cap.cjs'];
 
 function runTests() {
   for (const suite of SUITES) {

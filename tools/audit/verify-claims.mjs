@@ -240,6 +240,7 @@ const TEST_SUITES = [
   ['dispatch-econ', 'tests/dispatch-econ.cjs'],
   ['dispatch-dispatch-target', 'tests/dispatch-dispatch-target.cjs'],
   ['dispatch-away-merchant', 'tests/dispatch-away-merchant.cjs'],
+  ['dispatch-power-cap', 'tests/dispatch-power-cap.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
@@ -277,6 +278,7 @@ ok('派遣经济模型文件存在', existsSync(resolve(root, 'tests/dispatch-ec
 ok('派遣经济变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-econ-mutation.cjs')));
 ok('派遣目标选择回归文件存在', existsSync(resolve(root, 'tests/dispatch-dispatch-target.cjs')));
 ok('在途商旅回归文件存在', existsSync(resolve(root, 'tests/dispatch-away-merchant.cjs')));
+ok('派遣名额回归文件存在', existsSync(resolve(root, 'tests/dispatch-power-cap.cjs')));
 
 /* 6b-8. 报告里写的「派遣回归 N 项」必须和实际跑出来的条数一致。
  *
@@ -298,6 +300,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/dispatch-econ.cjs', 21],
   ['tests/dispatch-dispatch-target.cjs', 8],
   ['tests/dispatch-away-merchant.cjs', 7],
+  ['tests/dispatch-power-cap.cjs', 10],
   ['tests/market-rules.cjs', 6],
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
@@ -1008,6 +1011,40 @@ if (fallbackIdx >= 0) {
 }
 ok('D8 在途商旅回归文件存在',
   existsSync(resolve(root, 'tests/dispatch-away-merchant.cjs')));
+
+/* 6b-11. 缺陷 D9：断电时派遣名额必须收缩
+ *
+ * 契约写在三处，三处必须一致：
+ *   · 设施说明：断电时在途派遣上限降到 1
+ *   · 每日结算提示：燃料用尽，派遣名额降回 1 队
+ *   · 界面提示：电力下线，名额受限
+ *
+ * 旧实现只看 slot.installed，不看 fuel ——
+ * 「装好电力、燃料耗尽」和「电力满电」拿到的名额完全一样。
+ * 于是电力升级成空头支票：花的钱在断电时一个名额都换不来，
+ * 而燃料是必然耗尽的东西（每天扣 1 点）。
+ */
+const capIdx = shopSrc.indexOf('function _dispatchCap');
+ok('D9 _dispatchCap 存在', capIdx >= 0, '派遣名额函数必须能找到');
+if (capIdx >= 0) {
+  const cfn = shopSrc.slice(capIdx, capIdx + 700);
+  ok('D9 名额上限必须跟着「电力在线」走，不能只看装没装',
+    /_powerOnline\s*\(\s*\)/.test(cfn),
+    '只看 installed 的话，断电后名额仍然是 1+等级 —— ' +
+    '玩家花 ¤180+¤340+¤620 升来的名额一个都不生效');
+  ok('D9 断电时名额必须收缩到 1 队',
+    /return\s+1\s*;/.test(cfn),
+    '断电时必须有一条明确返回 1 的分支，不能沿用 1+level');
+  ok('D9 电力未安装时名额是 1 队',
+    /!\s*slot\s*\|\|\s*!\s*slot\.installed/.test(cfn),
+    '没装电力设施的基地只能在途 1 队');
+}
+ok('D9 燃料耗尽的提示必须写明名额降回 1 队',
+  /派遣名额降回\s*1\s*队/.test(shopSrc),
+  '玩家第一时间看到的提示必须说明名额缩水了 —— ' +
+  '否则他只会莫名其妙撞上「派遣位已满」');
+ok('D9 派遣名额回归文件存在',
+  existsSync(resolve(root, 'tests/dispatch-power-cap.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

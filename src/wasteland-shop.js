@@ -812,10 +812,32 @@
   var DISPATCH_EMPTY_FLOOR = 0.05;   // 空手概率下限
   var DISPATCH_POWER_RELIEF = 0.04;  // 每级在线电力降低 4 个百分点
 
+  /* 派遣名额上限 = 1 + 电力等级。
+   *
+   * 关键：这个上限**必须跟着「电力在线」走**，不是跟着「装了没装」走。
+   *
+   * 以前这里只看 installed：
+   *
+   *   var level = (slot && slot.installed) ? (slot.level || 0) : 0;
+   *   return 1 + level;   // 未通电基地只能在途 1 队
+   *
+   * 注释写着「未通电基地只能在途 1 队」，但代码读的是 installed ——
+   * 「装好电力、燃料耗尽」和「电力满电」拿到的名额**完全一样**。
+   *
+   * 后果：电力设施的等级变成一张空头支票。
+   * 燃料是**必然**会耗尽的东西（每天扣 1 点，燃油桶供 7 天、木炭供 2 天），
+   * 而燃料一断，玩家花 ¤180 + ¤340 + ¤620 升来的名额**一个都不生效**。
+   * 界面还在写「电力下线，名额受限」，实际却没限。
+   *
+   * 现在：断电就是 1 队，与设施说明、每日结算提示、
+   * 界面提示三处文案完全一致。
+   * （安保有同样的「需要电力在线才生效」语义，走的是 _facilityActive。） */
   function _dispatchCap() {
     var slot = _slot('power');
-    var level = (slot && slot.installed) ? (slot.level || 0) : 0;
-    return 1 + level;   // 未通电基地只能在途 1 队
+    if (!slot || !slot.installed) return 1;
+    /* 断电：名额降回 1 队。 */
+    if (!_powerOnline()) return 1;
+    return 1 + (slot.level || 0);
   }
 
   function _inFlightCount() {
