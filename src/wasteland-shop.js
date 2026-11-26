@@ -373,7 +373,10 @@
     var bought = 0, shortGold = false, noSpace = false;
 
     for (var n = 0; n < want; n++) {
-      if (state.gold < offer.unitCost) { shortGold = true; break; }
+      /* 判据用**能花的钱**（余额 - 拍卖冻结款）。
+       * 玩家已经把钱承诺给拍卖了，就不能再拿同一笔钱去进货 ——
+       * 否则拍卖结算时账上没钱，扣成负数（缺陷 D10）。 */
+      if (_spendableGold() < offer.unitCost) { shortGold = true; break; }
       var item;
       try {
         item = Core.createItem(offer.skuId, {
@@ -485,7 +488,11 @@
     var unitCost = _contactUnitCost(def, listPrice);
     var total = unitCost * want;
 
-    if (state.gold < total) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。
+     * 订购是**预付**：钱当场就扣掉了。
+     * 如果这笔钱已经被承诺给拍卖，就不能再花一次 ——
+     * 否则拍卖结算时账上没钱，扣成负数（缺陷 D10）。 */
+    if (_spendableGold() < total) {
       state.todayEvents.push(_makeEvent('order_fail', '资金不足',
         '订购 ' + sku.name + ' ×' + want + ' 需要 ¤' + total + '，当前余额 ¤' + state.gold + '。'));
       render();
@@ -614,7 +621,10 @@
     if (!def || !slot) return;
     if (slot.installed) return;
 
-    if (state.gold < def.installCost) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。
+     * 设施是当场付钱的：付了就把冻结款也搭进去了，
+     * 拍卖结算时账上就付不起了（缺陷 D10）。 */
+    if (_spendableGold() < def.installCost) {
       state.todayEvents.push(_makeEvent('facility_fail', '资金不足',
         '安装' + def.label + '需要 ¤' + def.installCost + '，当前余额 ¤' + state.gold + '。'));
       render();
@@ -647,7 +657,8 @@
       return;
     }
     var cost = def.upgradeCost[slot.level - 1];
-    if (state.gold < cost) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。见安装设施处的说明。 */
+    if (_spendableGold() < cost) {
       state.todayEvents.push(_makeEvent('facility_fail', '资金不足',
         '升级' + def.label + '需要 ¤' + cost + '，当前余额 ¤' + state.gold + '。'));
       render();
@@ -920,7 +931,10 @@
       render();
       return;
     }
-    if (state.gold < tier.fee) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。
+     * 派遣费是当场扣的；拍卖冻结款要是被花掉，
+     * 拍卖结算时就会扣成负数（缺陷 D10）。 */
+    if (_spendableGold() < tier.fee) {
       state.todayEvents.push(_makeEvent('dispatch_fail', '资金不足',
         '前往' + tier.label + '需要 ¤' + tier.fee + ' 的补给费，当前余额 ¤' + state.gold + '。'));
       render();
@@ -1226,7 +1240,8 @@
       return;
     }
 
-    if (state.gold < def.cost) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。见安装设施处的说明。 */
+    if (_spendableGold() < def.cost) {
       state.todayEvents.push(_makeEvent('machine_fail', '资金不足',
         '添置' + def.label + '需要 ¤' + def.cost + '，当前余额 ¤' + state.gold + '。'));
       render();
@@ -2074,7 +2089,8 @@
     _lockWorld();
     var npc = _findNpc(npcId);
     if (!npc || !npc.intel) return;
-    if (state.gold < npc.intelPrice) {
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。见安装设施处的说明。 */
+    if (_spendableGold() < npc.intelPrice) {
       state.todayEvents.push(_makeEvent('intel_fail', '资金不足',
         '购买情报需要 ¤' + npc.intelPrice + '，当前余额 ¤' + state.gold + '。'));
       render();
@@ -2176,6 +2192,54 @@
    * 现在：出价失败视为「弃权」，照样推进回合。
    * 玩家仍然不领先；回合推满 maxRounds 后拍卖照常结算。
    * 这样拍卖永远有终点，而且不会凭空扣钱。 */
+  // ── 拍卖冻结款（escrow）────────────────────────────────────
+  /*
+   * 出价是**承诺**，不是「我手头正好有这么多钱」。
+   *
+   * 缺陷 D10：以前出价只做了一次性校验
+   *   if (bid > state.gold) { 记事件; return; }
+   * 然后把 bid 记在 auc.currentBid 上，**一分钱都没锁**。
+   * 而钱要等到拍卖**结算**（可能好几拍、跨好几天）才扣：
+   *   state.gold -= auc.currentBid;
+   * 于是这中间那段时间里，那笔钱还在玩家的账上，可以拿去：
+   *   - 进货（buyFromVisitor）
+   *   - 订购（placeOrder）
+   *   - 交租 / 装设施 / 添机器 / 派遣
+   * 等拍卖结算时，账上已经被花光了，扣完直接变成负数。
+   *
+   * 实测：余额 ¤3000，出价 ¤2500，随后把 ¤2995 花掉，
+   * 拍卖结算后余额 = ¤3000 - ¤2995 - ¤2500 = **-¤2495**，
+   * 而货已经进了仓库。玩家凭空造出 ¤2495 的余额 —— 这是印钞机。
+   *
+   * 契约：玩家一旦出价并**领先**，那笔钱就**冻结**在拍卖上，
+   * 玩家能花的钱 = 余额 - 冻结额。
+   * 冻结额**从拍卖状态推导**，不另设账本：
+   *   领先者是玩家 → 冻结额 = currentBid（玩家要承担的全部成交价）
+   *   领先者是别人 → 冻结额 = 0（被压价了，义务自动解除）
+   *   拍卖已结束   → 冻结额 = 0
+   * 推导式的好处：不存在「账本和拍卖状态对不上」的二义性，
+   * 老存档（没有冻结字段）也能立刻得到正确的冻结额。
+   *
+   * 结算时：
+   *   赢拍 → 实扣 currentBid（此时余额必然 ≥ currentBid，因为冻结期挡住了花销）
+   *   落拍 → 一分钱不动
+   *   仓库放不下 → 一分钱不动
+   */
+  function _escrowHeld() {
+    var auc = state.auction;
+    if (!auc || auc.done) return 0;
+    /* 只有玩家领先时才有钱被冻结：
+     * 被别人压过价，义务就没了，冻结额自动归零。 */
+    if (auc.currentLeader !== 'player') return 0;
+    return Math.max(0, Number(auc.currentBid) || 0);
+  }
+
+  /* 玩家当前**能花**的钱：余额减去冻结款。
+   * 所有花钱的地方都要用这个数，而不是 state.gold。 */
+  function _spendableGold() {
+    return state.gold - _escrowHeld();
+  }
+
   function playerBid(amount) {
     var auc = state.auction;
     if (!auc || auc.done) return;
@@ -2187,9 +2251,18 @@
       Core.saveGame(state);
       render(); return;
     }
+    /* 判据是**余额**，不是「能花的钱」。
+     *
+     * 冻结款没有真的从余额里划走（它是推导出来的占用），
+     * 所以玩家的余额里始终包含着那一笔承诺 ——
+     * 要不要接下更高的价，只需要看「我全部身家能不能付得起这个成交价」。
+     * 如果拿「能花的钱」来判，玩家第二次加价会被自己的第一笔挡住：
+     *   余额 ¤3000，冻结 ¤500 → 能花 ¤2500 → 出价 ¤700 会被误拒。
+     */
     if (bid > state.gold) {
       state.todayEvents.push(_makeEvent('bid_fail', '资金不足',
-        '出价 ¤' + bid + ' 超过现有 ¤' + state.gold + '。'));
+        '出价 ¤' + bid + ' 超过现有 ¤' + state.gold +
+        (_escrowHeld() ? '（其中 ¤' + _escrowHeld() + ' 已冻结给本次拍卖）' : '') + '。'));
       // 弃权也要推进回合，否则拍卖会永远停在这一轮。
       _advanceAuctionRound();
       Core.saveGame(state);
@@ -2197,6 +2270,8 @@
     }
     auc.currentBid    = bid;
     auc.currentLeader = 'player';
+    /* 出价即承担成交价的义务 —— 冻结额由 currentLeader/currentBid 推导，
+     * 这里不需要另外记一笔账。 */
     _npcAuctionBid();
     _advanceAuctionRound();
     Core.saveGame(state);
@@ -2363,7 +2438,15 @@
       currentBid: auc.currentBid
     };
     if (auc.playerWon) {
-      // 奖池按档位取货，只在目录里挑（见 AUCTION_POOL 注释）。
+      /* 赢拍实扣成交价。
+       *
+       * 冻结款保证了这一刻余额必然付得起：
+       *   玩家领先期间，那笔成交价一直占着（_escrowHeld），
+       *   玩家花不掉它 —— 所以结算时 state.gold >= currentBid。
+       * 扣完余额还是非负的。
+       *
+       * 以前这里没有冻结，于是能出现「余额已经花光 → 扣成负数」。
+       */
       var pool = AUCTION_POOL[auc.tier] || AUCTION_POOL.low;
       var sku  = pool[Math.floor(Math.random() * pool.length)];
       if (!Core.ITEM_CATALOG[sku]) sku = AUCTION_POOL.low[0];
@@ -2523,6 +2606,40 @@
     var isWeekSwitch = (state.day > 1 && (state.day - 1) % 7 === 0);
     if (isWeekSwitch) {
       state.week += 1;
+      /* 换局之前，**先把上一局没走完的拍卖结清**。
+       *
+       * 以前这里是直接 `state.auction = _createAuctionState();` 把旧的覆盖掉。
+       * 而一局拍卖的拍数是随机的（maxRounds 5~8 拍），
+       * 一周只有 7 天可推进 —— 于是经常出现「拍数不够、局被换掉」的情况：
+       *   玩家出了价、看着拍卖推进了两三拍，
+       *   到了周末 `state.auction` 被新的一局直接盖掉，
+       *   玩家既没拿到货、也没看到「落拍」—— 这一局凭空消失。
+       *
+       * 实测：200 个随机种子 × 60 天，1400 局拍卖里有 **717 局（51.2%）**
+       * 是没走完就被替换掉的。换句话说，一半以上的拍卖在玩家眼里
+       * 是「开着开着就没了」。
+       *
+       * 现在：先把旧局推到最后一拍、判出胜负（该给货给货、该落拍落拍），
+       * 再开新局。玩家永远能看到这一局的结果。
+       *
+       * **顺序：先结拍卖，再收租。**
+       *
+       * 缺陷 D10 的修法依赖「玩家领先期间，那笔成交价一直占着」，
+       * 所以结算那一刻余额必然付得起。
+       * 而租金是**固定支出**，它要是先扣，就可能把玩家付不起的那笔钱吃掉：
+       *   余额 ¤3000，出价 ¤2500（冻结），租金 ¤1000
+       *   先收租 → 余额 ¤2000 → 再结算拍卖 → 余额 = ¤2000 - ¤2500 = **-¤500**
+       * 先结拍卖 → 余额 ¤500（货到手）→ 再收租 → 余额 = -¤500
+       * 差别在于：第二种情况是**玩家自己的选择造成的欠债**
+       * （他承诺了 ¤2500 又遇上 ¤1000 房租），这时欠债是合法的，
+       * 声誉 -10 也该照罚；而第一种是实现顺序的问题 ——
+       * 冻结机制保证的钱被租金偷偷吃掉了，拍卖结算却付不出。
+       *
+       * 所以：结拍卖 → 收租 → 开新局。
+       */
+      _settlePendingAuction();
+      /* 收租放在拍卖结算之后。
+       * 租金是刚性支出，付不出就记欠债 + 声誉 -10（这是设计内的惩罚）。 */
       state.gold -= state.rent;
       var rentOk = state.gold >= 0;
       if (!rentOk) NPC.applyEffect(state.reputation, { overall: -10 });
@@ -2531,22 +2648,6 @@
         '本周维度锚点维护费 ¤' + state.rent + '。' + (rentOk ? '' : '账户余额不足，声誉 -10。'), 0);
       rentEv.resolved = true;
       state.todayEvents.unshift(rentEv);
-      // 换局之前，**先把上一局没走完的拍卖结清**。
-      //
-      // 以前这里是直接 `state.auction = _createAuctionState();` 把旧的覆盖掉。
-      // 而一局拍卖的拍数是随机的（maxRounds 5~8 拍），
-      // 一周只有 7 天可推进 —— 于是经常出现「拍数不够、局被换掉」的情况：
-      //   玩家出了价、看着拍卖推进了两三拍，
-      //   到了周末 `state.auction` 被新的一局直接盖掉，
-      //   玩家既没拿到货、也没看到「落拍」—— 这一局凭空消失。
-      //
-      // 实测：200 个随机种子 × 60 天，1400 局拍卖里有 **717 局（51.2%）**
-      // 是没走完就被替换掉的。换句话说，一半以上的拍卖在玩家眼里
-      // 是「开着开着就没了」。
-      //
-      // 现在：先把旧局推到最后一拍、判出胜负（该给货给货、该落拍落拍），
-      // 再开新局。玩家永远能看到这一局的结果。
-      _settlePendingAuction();
       state.auction = _createAuctionState();
       state.todayEvents.push(_makeEvent('auction_open', '维度漂流物拍卖开启',
         '本周拍卖已开启，共 ' + (state.auction.competitors.length + 1) + ' 名竞拍者。', 9));
@@ -2671,7 +2772,14 @@
     var statRep  = document.getElementById('wl-stat-rep');
     var statSta  = document.getElementById('wl-stat-stamina');
     if (statDay)  statDay.textContent  = '第 ' + state.day + ' 天 · 第 ' + state.week + ' 周';
-    if (statCash) statCash.textContent = '¤ ' + state.gold.toLocaleString();
+    /* 余额要标出冻结款（缺陷 D10）。
+     * 玩家出价以后，那笔钱就不能再花了 ——
+     * 但余额显示的是全额，玩家看着 ¤3000 以为还能花 ¤3000。
+     * 标出来：可用 ¤500（¤2500 冻结在拍卖）。 */
+    var escrowNow = _escrowHeld();
+    if (statCash) statCash.textContent = escrowNow > 0
+      ? '¤ ' + _spendableGold().toLocaleString() + '（¤' + escrowNow.toLocaleString() + ' 冻结）'
+      : '¤ ' + state.gold.toLocaleString();
     if (statRep)  statRep.textContent  = '声誉 ' + ((state.reputation && state.reputation.overall) || 0);
     if (statSta)  statSta.textContent  = '体力 ' + Math.floor(_stamina()) + ' / ' + STAMINA_MAX;
 
@@ -2861,7 +2969,9 @@
         UI.renderAuction(aucEl, {
           containerName: auc.containerName, tier: auc.tier, clues: auc.clues,
           currentBid: auc.currentBid, currentBidder: auc.currentLeader || '—',
-          minIncrement: auc.minIncrement, round: auc.round, maxRound: auc.maxRounds, ended: false
+          minIncrement: auc.minIncrement, round: auc.round, maxRound: auc.maxRounds, ended: false,
+          /* 玩家领先时那笔成交价是冻结的，要告诉玩家他能花多少。 */
+          escrow: _escrowHeld()
         }, { onBid: playerBid });
       } else if (auc && auc.done) {
         if (aucWrap) aucWrap.style.display = '';

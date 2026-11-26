@@ -244,6 +244,7 @@ const TEST_SUITES = [
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
+  ['auction-reserve', 'tests/auction-reserve.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
@@ -304,6 +305,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/market-rules.cjs', 6],
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
+  ['tests/auction-reserve.cjs', 10],
   ['tests/loop-rules.cjs', 9],
   ['tests/fuzz.cjs', 1],
   ['tests/build-retention.cjs', 1],
@@ -326,6 +328,8 @@ ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rul
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
 ok('拍卖整周回归文件存在', existsSync(resolve(root, 'tests/auction-week.cjs')));
 ok('拍卖整周变异测试文件存在', existsSync(resolve(root, 'tests/auction-week-mutation.cjs')));
+ok('拍卖冻结款回归文件存在', existsSync(resolve(root, 'tests/auction-reserve.cjs')));
+ok('拍卖冻结款变异测试文件存在', existsSync(resolve(root, 'tests/auction-reserve-mutation.cjs')));
 ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.cjs')));
 ok('基础玩法变异测试文件存在', existsSync(resolve(root, 'tests/loop-mutation.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
@@ -383,7 +387,7 @@ ok('L3 结算不再按 npcId 有条件归还', !/if\s*\(state\.counterState\.npc
  *    没有它就看不出某一局到底是怎么收的。 */
 const endDayBody = (() => {
   const i = shop.indexOf('function endDay');
-  return i >= 0 ? stripComments(shop.slice(i, i + 4200)) : '';
+  return i >= 0 ? stripComments(shop.slice(i, i + 8000)) : '';
 })();
 const settleFn = (() => {
   const i = shop.indexOf('function _settlePendingAuction');
@@ -393,7 +397,17 @@ const advanceFn = (() => {
   const i = shop.indexOf('function _advanceAuctionDaily');
   return i >= 0 ? stripComments(shop.slice(i, i + 900)) : '';
 })();
-ok('A1 换周前先结清上一局拍卖', /_settlePendingAuction\(\);\s*state\.auction\s*=\s*_createAuctionState\(\);/.test(endDayBody));
+/* A1：换周前必须先结清上一局拍卖，然后才开新局。
+ * 注意中间夹着「收租」那一段（缺陷 D10 的修法把结算挪到了收租之前），
+ * 所以这里不能用「紧挨着」的写法 —— 必须容忍中间的固定支出块。 */
+ok('A1 换周前先结清上一局拍卖',
+  /_settlePendingAuction\(\);[\s\S]*?state\.auction\s*=\s*_createAuctionState\(\);/.test(endDayBody));
+/* D10：结算必须排在收租之前 —— 先收租会把冻结款吃掉，
+ * 拍卖结算时余额付不出，账上变负。 */
+ok('A1 拍卖结算排在收租之前',
+  endDayBody.indexOf('_settlePendingAuction();') >= 0 &&
+  endDayBody.indexOf('_settlePendingAuction();') < endDayBody.indexOf('state.gold -= state.rent;'),
+  '先结拍卖再收租：冻结的钱不能被租金先扣掉');
 ok('A1 存在 _settlePendingAuction 结算函数', settleFn.length > 0, 'fn=' + settleFn.length);
 ok('A2 每日推进在最后一拍保护玩家领先',
   /isLastRound[\s\S]{0,200}?currentLeader\s*===\s*'player'/.test(advanceFn));
@@ -1045,6 +1059,69 @@ ok('D9 燃料耗尽的提示必须写明名额降回 1 队',
   '否则他只会莫名其妙撞上「派遣位已满」');
 ok('D9 派遣名额回归文件存在',
   existsSync(resolve(root, 'tests/dispatch-power-cap.cjs')));
+
+/* 6b-12. 缺陷 D10：拍卖出价必须冻结资金
+ *
+ * 出价是**承诺**：玩家一旦领先，那笔成交价就不能再拿去花。
+ * 旧实现只查了一次余额就把 bid 记在 currentBid 上，钱要等到结算才扣 ——
+ * 中间那段时间里玩家能把同一笔钱花掉，结算时余额直接变负。
+ *
+ * 这里做源码级断言，把「冻结」这件事钉死。 */
+const escrowIdx = shopSrc.indexOf('function _escrowHeld');
+ok('D10 冻结款函数存在', escrowIdx >= 0, '拍卖冻结款函数必须能找到');
+if (escrowIdx >= 0) {
+  const efn = shopSrc.slice(escrowIdx, escrowIdx + 900);
+  ok('D10 冻结额必须跟着「玩家领先」走',
+    /currentLeader\s*!==\s*'player'/.test(efn),
+    '只有玩家领先时才有钱被冻结；被压价后义务就没了，冻结额必须自动归零');
+  ok('D10 冻结额必须等于当前成交价',
+    /currentBid/.test(efn),
+    '玩家承担的是**全部成交价**的义务，冻结额就是成交价');
+  ok('D10 拍卖结束后冻结额必须归零',
+    /auc\.done/.test(efn),
+    '拍卖收场后冻结款必须释放 —— 落拍的钱要原样退回');
+}
+const spendableIdx = shopSrc.indexOf('function _spendableGold');
+ok('D10 能花的钱函数存在', spendableIdx >= 0, '可花余额函数必须能找到');
+if (spendableIdx >= 0) {
+  const sfn = shopSrc.slice(spendableIdx, spendableIdx + 400);
+  ok('D10 能花的钱必须扣掉冻结款',
+    /state\.gold\s*-\s*_escrowHeld\s*\(\s*\)/.test(sfn),
+    '可花余额 = 总余额 - 冻结款；少了这一项，钱就能花两次');
+}
+ok('D10 订购必须按「能花的钱」判资金',
+  /_spendableGold\s*\(\s*\)\s*<\s*total/.test(shopSrc),
+  '订购是预付、当场扣钱 —— 判据必须算上冻结款');
+ok('D10 柜台收货必须按「能花的钱」判资金',
+  /_spendableGold\s*\(\s*\)\s*<\s*offer\.unitCost/.test(shopSrc),
+  '商旅兜售也是当场扣钱 —— 判据必须算上冻结款');
+ok('D10 派遣费必须按「能花的钱」判资金',
+  /_spendableGold\s*\(\s*\)\s*<\s*tier\.fee/.test(shopSrc),
+  '派遣费当场扣 —— 判据必须算上冻结款');
+ok('D10 设施安装/升级与添机器必须按「能花的钱」判资金',
+  /_spendableGold\s*\(\s*\)\s*<\s*def\.installCost/.test(shopSrc) &&
+    /_spendableGold\s*\(\s*\)\s*<\s*cost/.test(shopSrc) &&
+    /_spendableGold\s*\(\s*\)\s*<\s*def\.cost/.test(shopSrc),
+  '这三处都是当场扣钱 —— 判据必须算上冻结款');
+ok('D10 顶栏余额必须显示冻结额',
+  /冻结/.test(shopSrc),
+  '行为对了但玩家不知道，实质上仍然是坏体验 —— ' +
+  '玩家看着全额余额会以为还能花那么多');
+ok('D10 拍卖面板必须显示冻结额',
+  /escrow:\s*_escrowHeld\s*\(\s*\)/.test(shopSrc),
+  '拍卖面板要告诉玩家这一笔钱被冻结了');
+ok('D10 换周必须先结拍卖再收租',
+  (() => {
+    const settleAt = shopSrc.indexOf('_settlePendingAuction();');
+    const rentAt = shopSrc.indexOf('state.gold -= state.rent;');
+    return settleAt >= 0 && rentAt >= 0 && settleAt < rentAt;
+  })(),
+  '先收租再结拍卖会掩盖欠租：余额还够时租金报「已扣除」，' +
+  '拍卖结算后账上变负 —— 超订的玩家白拿货还免了欠租的罚');
+ok('D10 拍卖冻结款回归文件存在',
+  existsSync(resolve(root, 'tests/auction-reserve.cjs')));
+ok('D10 拍卖冻结款变异测试文件存在',
+  existsSync(resolve(root, 'tests/auction-reserve-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

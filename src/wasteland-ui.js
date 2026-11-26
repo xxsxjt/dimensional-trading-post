@@ -1118,6 +1118,19 @@
     statusBar.appendChild(el('span', {}, '回合: ' + (s.round || 1) + '/' + (s.maxRound || '?')));
     container.appendChild(statusBar);
 
+    /* 冻结款必须写出来（缺陷 D10）。
+     *
+     * 玩家出价以后，那笔钱就**不能再花了**。
+     * 但余额显示的是全额 —— 玩家看着 ¤3000 以为自己还能花 ¤3000，
+     * 实际只能花 ¤500（¤2500 冻结在拍卖上）。
+     * 不说的话，玩家只会觉得「明明有钱却买不了」，像 bug。
+     */
+    if (s.escrow > 0) {
+      container.appendChild(el('p', {
+        style: 'margin:6px 0 0;font-size:12px;color:#79e7ee;',
+      }, '¤' + Number(s.escrow).toLocaleString() + ' 已冻结给本次拍卖，落拍原样退回。'));
+    }
+
     if (s.ended) {
       container.appendChild(el('b', {
         style: 'color:' + (s.won ? PHOSPHOR : '#ff7e8e') + ';font-size:13px;',
