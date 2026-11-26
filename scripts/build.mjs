@@ -55,12 +55,24 @@ try {
   Object.values(previous.files || {}).forEach(add);
 
   // 扫 dist/ 下的哈希产物，把清单没记但磁盘还在的补进来
+  //
+  // 注意路径前缀：walk('dist') 返回的是 'dist/src/xxx.js'，
+  // 而 retained 的键必须是**相对 dist/ 根**的 'src/xxx.js'。
+  //
+  // 原来这里直接把 'dist/src/xxx.js' 塞进 candidates，
+  // 后面 `resolve(root,'dist',path)` 就变成了
+  // 'dist/dist/src/xxx.js' —— 文件不存在，于是 `continue` 掉。
+  //
+  // 结果：这段「捞回孤儿产物」的逻辑**从来没生效过**。
+  // 哈希产物每次构建换名，旧的就在磁盘上变成没人记录的孤儿，
+  // dist/ 无限膨胀，清单里也查不到它们。
   for (const dir of walk('dist')) {
     if (!/\.[0-9a-f]{12}\./.test(dir)) continue;
-    if (candidates.has(dir)) continue;
+    const rel = dir.replace(/^dist[\\/]/, '');   // ← 去掉 dist/ 前缀
+    if (candidates.has(rel)) continue;
     const abs = resolve(root, dir);
     const bytes = readFileSync(abs);
-    candidates.set(dir, {path: dir, sha256: sha(bytes), bytes: bytes.length});
+    candidates.set(rel, {path: rel, sha256: sha(bytes), bytes: bytes.length});
   }
 
   for (const [path, item] of candidates) {

@@ -500,28 +500,68 @@
     };
   }
 
+  /* ── 派遣战利品表 ──────────────────────────────────────────────────
+   *
+   * 稀有货必须用**数据**声明，不能在生成函数里写 `destination==='xxx'` 的分支。
+   *
+   * 以前只有 midrange 和 deepzone 有稀有过滤（写死在 _generateDispatchLoot 里），
+   * sect_ruins 就没有 —— 而它的 20 个 SKU 单价均值 ¤383、品质 3–5，
+   * 于是「一把 ¤1500 的储物戒」有 35% 的概率出现在**每一个槽位**上。
+   * 实测下来宗门遗迹的日均净期望是 ¤137，是深入禁区（¤58）的 2.36 倍：
+   * 一个 5 天的「中途档」完胜 7 天的「最远档」，换界根本不是取舍，是纯赚。
+   *
+   * 现在稀有清单写在表里（rare:{chance, skus}），
+   * 生成函数只读数据、不认档位名 —— 以后加档位不会再漏。
+   */
   var _DISPATCH_LOOT={
     suburb:{
       skus:['water_bottle_500','water_cup','junk_metal','junk_plastic','junk_cloth','canned_beans','canned_fish','empty_bottle','matches','candle_pack'],
       count:[1,3],qualityRange:[1,3]
     },
     midrange:{
-      skus:['water_bottle_500','water_bottle_2l','canned_meat','canned_stew','iron_ingot_1kg','copper_pipe_30','battery_aa','bandage_roll','painkiller','multitool','screw_bag','salt_bag','hardtack'],
-      count:[1,4],qualityRange:[2,4]
+      // 罕见补给：antibiotic / voltage_meter / circuit_board。
+      // 它们必须**同时**列在 skus 里 —— 稀有清单是这个档位自己的货，
+      // 不是从别处借来的。以前它们只出现在生成函数的硬编码过滤里，
+      // 战利品表的 skus 里根本没有，于是「这个档位可能捡到什么」这件事
+      // 有两个互相矛盾的答案。
+      skus:['water_bottle_500','water_bottle_2l','canned_meat','canned_stew','iron_ingot_1kg','copper_pipe_30','battery_aa','bandage_roll','painkiller','multitool','screw_bag','salt_bag','hardtack','antibiotic','voltage_meter','circuit_board'],
+      count:[1,4],qualityRange:[2,4],
+      // 罕见补给：三成概率出现在槽位上，其余时候这趟就带不回来。
+      rare:{chance:0.3,skus:['antibiotic','voltage_meter','circuit_board']}
     },
     deepzone:{
       // signal_jammer 是唯一没法靠商旅带上门的货（¤350 超过访客带货上限），
       // 所以它的入口只能在这里：一台被遗弃在禁区里的干扰器。
-      // 240 的补给费加 7 天往返，换来它也不算白送。
+      // 96 的补给费加 7 天往返，换来它也不算白送。
       skus:['water_distilled_500','canned_meat','iron_ingot_5kg','circuit_board','antibiotic','surgical_kit','first_aid_kit','voltage_meter','radio_module','fuel_jerrycan_5l','geiger','antidote','ammo_9mm','stolen_goods','recipe_card','map_fragment','signal_jammer','ammo_762','stun_grenade','hazmat_suit','night_vision','toolbox'],
-      count:[2,5],qualityRange:[2,5]
+      count:[2,5],qualityRange:[2,5],
+      // 禁区黑货：两成概率。前一版写的是 0.2，这里保持。
+      rare:{chance:0.2,skus:['ammo_9mm','stolen_goods','antidote','surgical_kit']}
     },
     sect_ruins:{
       // 宗门界的派遣目的地。高阶法器与丹材单价高（¤420–1500），
       // 商旅带货上限（900）收不下，只能靠进遗迹去捡。
       // 也正因为难拿，它们才撑得起宗门线的高端交易。
+      //
+      // 稀有门槛（这一轮修的）：
+      // 这个档位以前**根本没有稀有门槛** ——
+      // midrange 和 deepzone 有（写死在生成函数里），sect_ruins 没有，
+      // 而它的 SKU 单价均值 ¤383、品质 3–5，
+      // 「一把 ¤1500 的储物戒」于是有 35% 的概率出现在每个槽位上。
+      // 实测宗门遗迹日均净期望 ¤137，是深入禁区（¤58）的 2.36 倍：
+      // 一个 5 天的「中途档」完胜 7 天的「最远档」，
+      // 于是换界根本不是取舍 —— 换到宗门界就是纯赚两倍多。
+      //
+      // 修法分两步：
+      //   1. 把真正贵的（储物戒 / 灵剑 / 符纹道袍 / 筑基丹 / 引魂灯 / 御兽许可）
+      //      划进 rare 池 —— 它们本来就不该是「日常捡到」的东西；
+      //      同时它们必须**也**列在 skus 里 —— rare 清单是这个档位自己的货。
+      //   2. rare.chance=0.10 —— 高价值对应高方差，
+      //      十趟里大概一趟撞上法器，其余是普通丹材。
+      // 现在宗门遗迹日均 ¤72，深入禁区 ¤58 —— 同一量级，各有各的极限。
       skus:['spirit_sword','storage_ring','spirit_lantern','talisman_robe','formation_disc','jade_gourd','black_iron','beast_bone','thunder_stone','spirit_silk','moon_dew','spirit_wood','foundation_pill','marrow_wash_pill','sect_pass','beast_tamer_permit','ancient_coin','star_chart','spirit_tea','dried_meat'],
-      count:[1,3],qualityRange:[3,5]
+      count:[1,3],qualityRange:[3,5],
+      rare:{chance:0.10,skus:['spirit_sword','storage_ring','talisman_robe','foundation_pill','spirit_lantern','beast_tamer_permit','marrow_wash_pill']}
     },
     sect_outskirts:{
       // 宗门界的「近郊」——山门外围的灵田、散修遗弃的储物袋。
@@ -548,15 +588,38 @@
     var loot=[];
     for(var i=0;i<count;i++){
       var skus=spec.skus.slice();
-      if(destination==='midrange'){
-        var rareSkus=['antibiotic','voltage_meter','circuit_board'];
-        skus=skus.filter(function(s){return rareSkus.indexOf(s)===-1||Math.random()<0.3;});
-        if(skus.length===0)skus=['water_bottle_500','canned_beans','junk_metal'];
-      }
-      if(destination==='deepzone'){
-        var veryRare=['ammo_9mm','stolen_goods','antidote','surgical_kit'];
-        skus=skus.filter(function(s){return veryRare.indexOf(s)===-1||Math.random()<0.2;});
-        if(skus.length===0)skus=['water_bottle_500','canned_meat','iron_ingot_1kg'];
+      /* 稀有门槛由**数据**决定（spec.rare），生成函数不认档位名。
+       *
+       * 以前这里是两个写死的 `destination==='midrange'` / `destination==='deepzone'`
+       * 分支，结果 sect_ruins 完全没有稀有门槛 ——
+       * 而它的 SKU 单价均值 ¤383、品质 3–5，
+       * 「一把 ¤1500 的储物戒」于是有 35% 的概率出现在每个槽位上。
+       * 实测宗门遗迹日均净期望 ¤137，是深入禁区（¤58）的 2.36 倍：
+       * 5 天的中途档完胜 7 天的最远档，换界从取舍变成了纯赚。
+       *
+       * 关键在于门槛的**方向**：
+       *   稀有品不是「命中就独占一个槽位」，而是「这个槽位有 chance 的概率抽到稀有品，
+       *   否则抽普通货（普通货里必须排掉稀有品本身）」。
+       * 如果普通池不排掉稀有品，那 10% 的概率换来的是一把必出的 ¤1500 储物戒，
+       * 期望值反而**涨**上去了（实测 ¤137 → ¤171）—— 门槛变成了放大器。
+       *
+       * chance=0 的档位：**门槛依然生效**，只是永远不命中 ——
+       * 于是稀有品一件都出不来。
+       * 这里不能写成 `spec.rare.chance>0` —— 那样 chance=0 会把整个门槛跳过，
+       * 稀有品又回到普通池里，等于「没设门槛」。
+       * （写错的话，chance=0 的档位会退化成「稀有品 100% 出现」，
+       *   比没有门槛还糟。）
+       *
+       * 现在每个档位自己声明 rare:{chance, skus}，
+       * 稀有品严格按 chance 出现，且不出现在普通池里。
+       * 加新档位不会再漏掉这道门。 */
+      if(spec.rare&&spec.rare.skus&&spec.rare.skus.length){
+        if(Math.random()<spec.rare.chance){
+          skus=spec.rare.skus.slice();
+        }else{
+          var commons=spec.skus.filter(function(s){return spec.rare.skus.indexOf(s)===-1;});
+          skus=commons.length?commons:spec.skus.slice();
+        }
       }
       var skuId=skus[Math.floor(Math.random()*skus.length)];
       var quality=_randInt(spec.qualityRange[0],spec.qualityRange[1]);
@@ -1178,6 +1241,17 @@
     computePrice: computePrice,
     advanceDay: advanceDay,
     createDispatch: createDispatch,
+    /* 战利品生成器本身导出出来。
+     *
+     * 之前它是私有的，于是**测试只能自己重写一遍抽取规则**来估算收益 ——
+     * 而那份重写漏掉了稀有门槛、品质区间和品质乘数，
+     * 缺陷 D5（宗门遗迹没有稀有门槛）就是这么被放过去的：
+     * 实现的期望值 ¤137/天，测试算出来的期望值跟它对不上，
+     * 断言也就没红。
+     *
+     * 导出之后，经济测试可以直接调**真实的**生成器，
+     * 期望值只有一个来源。改实现 → 测试立刻红。 */
+    _generateDispatchLoot: _generateDispatchLoot,
     MACHINE_DEFS: MACHINE_DEFS,
     RECIPE_DEFS: RECIPE_DEFS,
     machineDef: machineDef,

@@ -52,9 +52,9 @@ const MUTATIONS = [
   {
     name: 'M4 废土档位不写 world（宗门界也能派队进废土）',
     file: SHOP,
-    from: crlf(`    suburb:   { key: 'suburb',   label: '近郊',     fee: 4,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`),
+    from: crlf(`    suburb:   { key: 'suburb',   label: '近郊',     fee: 2,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`),
     to:   crlf(`    // 变异：没有 world —— 被当成通用档位。
-    suburb:   { key: 'suburb',   label: '近郊',     fee: 4,   days: 1, emptyHanded: 0.12 },`)
+    suburb:   { key: 'suburb',   label: '近郊',     fee: 2,   days: 1, emptyHanded: 0.12 },`)
   },
   {
     name: 'M5 宗门档位不写 world（废土界也能派队进宗门）',
@@ -81,8 +81,8 @@ const MUTATIONS = [
   {
     name: 'M7 中距离费率回到 40（纯陷阱档位：日均收益低于近郊）',
     file: SHOP,
-    from: crlf(`    midrange: { key: 'midrange', label: '中距离',   fee: 18,  days: 3, emptyHanded: 0.25, world: 'wasteland_nuclear' },`),
-    to:   crlf(`    // 变异：费率吃掉期望货值的 64%，日均收益反而低于近郊。
+    from: crlf(`    midrange: { key: 'midrange', label: '中距离',   fee: 20,  days: 3, emptyHanded: 0.25, world: 'wasteland_nuclear' },`),
+    to:   crlf(`    // 变异：费率吃掉期望货值的 45%，日均收益反而低于近郊。
     midrange: { key: 'midrange', label: '中距离',   fee: 40,  days: 3, emptyHanded: 0.25, world: 'wasteland_nuclear' },`)
   },
   {
@@ -106,6 +106,47 @@ const MUTATIONS = [
     from: crlf(`      skus:['water_bottle_500','water_cup','junk_metal','junk_plastic','junk_cloth','canned_beans','canned_fish','empty_bottle','matches','candle_pack'],`),
     to:   crlf(`      // 变异：近郊塞进高价值货 —— 1 天档变成最强档。
       skus:['circuit_board','antibiotic','surgical_kit','voltage_meter','radio_module','fuel_jerrycan_5l','geiger'],`)
+  },
+  /* ══ 缺陷 D5：稀有门槛 ══════════════════════════════════════ */
+  {
+    name: 'M11 宗门遗迹没有稀有门槛（5 天中途档完胜 7 天最远档 2.36 倍）',
+    file: CORE,
+    from: crlf(`      rare:{chance:0.10,skus:['spirit_sword','storage_ring','talisman_robe','foundation_pill','spirit_lantern','beast_tamer_permit','marrow_wash_pill']}`),
+    to:   crlf(`      // 变异：门槛被整个删掉 —— 储物戒（¤1500）以 35% 的概率出现在每个槽位上。
+`)
+  },
+  {
+    name: 'M12 稀有门槛被架空（稀有品仍然留在普通池里，概率被双重计入）',
+    file: CORE,
+    from: crlf(`          var commons=spec.skus.filter(function(s){return spec.rare.skus.indexOf(s)===-1;});
+          skus=commons.length?commons:spec.skus.slice();`),
+    to:   crlf(`          // 变异：普通池不排掉稀有品 —— 实际概率 = chance + (1-chance)/池大小。
+          skus=spec.skus.slice();`)
+  },
+  {
+    name: 'M13 稀有门槛方向搞反（命中就独占槽位，期望值反而涨上去）',
+    file: CORE,
+    from: crlf(`        if(Math.random()<spec.rare.chance){
+          skus=spec.rare.skus.slice();
+        }else{`),
+    to:   crlf(`        // 变异：命中稀有品时把它**塞进**普通池而不是独占槽位。
+        if(Math.random()<spec.rare.chance){
+          skus=spec.skus.slice();
+        }else{`)
+  },
+  {
+    name: 'M14 宗门山外费率回到 3（快钱档变成宗门界最贵的档位）',
+    file: SHOP,
+    from: crlf(`    sect_outskirts: { key: 'sect_outskirts', label: '宗门山外', fee: 1, days: 1, emptyHanded: 0.1, world: 'xianxia_sect' }`),
+    to:   crlf(`    // 变异：费率占期望货值的 34% —— 比同世界的宗门遗迹（21.6%）还高。
+    sect_outskirts: { key: 'sect_outskirts', label: '宗门山外', fee: 3, days: 1, emptyHanded: 0.1, world: 'xianxia_sect' }`)
+  },
+  {
+    name: 'M15 近郊费率回到 4（快钱档的费率占比高过长途档）',
+    file: SHOP,
+    from: crlf(`    suburb:   { key: 'suburb',   label: '近郊',     fee: 2,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`),
+    to:   crlf(`    // 变异：占比 33% —— 超过中距离（22.5%）和深入禁区（19.1%）。
+    suburb:   { key: 'suburb',   label: '近郊',     fee: 4,   days: 1, emptyHanded: 0.12, world: 'wasteland_nuclear' },`)
   }
 ];
 
@@ -119,15 +160,26 @@ function restoreAll() {
   for (const f of Object.keys(backup)) fs.writeFileSync(f, backup[f], 'utf8');
 }
 
+/* 变异后要跑**两个**回归套件：
+ *   · dispatch-rules.cjs      —— 定价规则（费率占比、日均、每体力）
+ *   · dispatch-rare-gate.cjs  —— 稀有门槛本身（缺陷 D5 的正主）
+ *
+ * 以前只跑前者。缺陷 D5 藏在后者的视野里 ——
+ * 定��规则的模型不算稀有门槛，所以它对「门槛没了」完全无感。
+ * 现在两套都跑，缺一不可。 */
+const SUITES = ['dispatch-rules.cjs', 'dispatch-rare-gate.cjs'];
+
 function runTests() {
-  try {
-    const out = execFileSync(process.execPath, ['--max-old-space-size=3072',
-      path.join(root, 'tests', 'dispatch-rules.cjs')],
-      {cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 300000});
-    return {ok: true, out};
-  } catch (e) {
-    return {ok: false, out: (e.stdout || '') + (e.stderr || '')};
+  for (const suite of SUITES) {
+    try {
+      execFileSync(process.execPath, ['--max-old-space-size=3072',
+        path.join(root, 'tests', suite)],
+        {cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 300000});
+    } catch (e) {
+      return {ok: false, out: (e.stdout || '') + (e.stderr || '')};
+    }
   }
+  return {ok: true, out: ''};
 }
 
 let caught = 0, missed = 0;

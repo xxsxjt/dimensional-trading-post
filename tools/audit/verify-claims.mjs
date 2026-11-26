@@ -236,12 +236,15 @@ const TEST_SUITES = [
   ['world-switch', 'tests/world-switch-rules.cjs'],
   ['machine-world', 'tests/machine-world-rules.cjs'],
   ['dispatch', 'tests/dispatch-rules.cjs'],
+  ['dispatch-rare-gate', 'tests/dispatch-rare-gate.cjs'],
+  ['dispatch-econ', 'tests/dispatch-econ.cjs'],
   ['market', 'tests/market-rules.cjs'],
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
+  ['build-orphan', 'tests/build-orphan-salvage.cjs'],
 ];
 const suiteRuns = TEST_SUITES.map(([name, rel]) => {
   const r = spawnSync(process.execPath, [resolve(root, rel)], {cwd: root, encoding: 'utf8'});
@@ -266,6 +269,49 @@ ok('机器世界归属回归文件存在', existsSync(resolve(root, 'tests/machi
 ok('机器世界归属变异测试文件存在', existsSync(resolve(root, 'tests/machine-world-mutation.cjs')));
 ok('派遣回归文件存在', existsSync(resolve(root, 'tests/dispatch-rules.cjs')));
 ok('派遣变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-mutation.cjs')));
+ok('派遣稀有门槛回归文件存在', existsSync(resolve(root, 'tests/dispatch-rare-gate.cjs')));
+ok('派遣经济回归文件存在', existsSync(resolve(root, 'tests/dispatch-econ.cjs')));
+ok('派遣经济模型文件存在', existsSync(resolve(root, 'tests/dispatch-econ-model.cjs')));
+ok('派遣经济变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-econ-mutation.cjs')));
+
+/* 6b-8. 报告里写的「派遣回归 N 项」必须和实际跑出来的条数一致。
+ *
+ * 这一条是**逐个套件**对账，不是只对总数 ——
+ * 只对总数的话，把 A 套件的 3 条挪到 B 套件，总数不变，
+ * 报告里的分解还是错的。
+ *
+ * 上一轮就漂过一次：报告写「派遣稀有门槛 9 项」，
+ * 实际跑出来是 17 条。总数对得上，所以没人发现。 */
+const REPORTED_SUITE_ITEMS = [
+  ['tests/wasteland-shop.cjs', 17],
+  ['tests/soak.cjs', 6],
+  ['tests/npc-rules.cjs', 8],
+  ['tests/faction-rules.cjs', 8],
+  ['tests/world-switch-rules.cjs', 8],
+  ['tests/machine-world-rules.cjs', 8],
+  ['tests/dispatch-rules.cjs', 26],
+  ['tests/dispatch-rare-gate.cjs', 17],
+  ['tests/dispatch-econ.cjs', 21],
+  ['tests/market-rules.cjs', 6],
+  ['tests/auction-rules.cjs', 6],
+  ['tests/auction-week.cjs', 10],
+  ['tests/loop-rules.cjs', 9],
+  ['tests/fuzz.cjs', 1],
+  ['tests/build-retention.cjs', 1],
+  ['tests/build-orphan-salvage.cjs', 1]
+];
+ok('报告声明的各套件条数与真实 PASS 条数一致',
+  REPORTED_SUITE_ITEMS.every(([rel, n]) => {
+    const r = suiteRuns.find(s => s.rel === rel);
+    if (!r) return false;
+    const c = (r.out.match(/^PASS/gm) || []).length;
+    return c === n;
+  }),
+  REPORTED_SUITE_ITEMS.map(([rel, n]) => {
+    const r = suiteRuns.find(s => s.rel === rel);
+    const c = r ? (r.out.match(/^PASS/gm) || []).length : -1;
+    return rel.replace('tests/', '') + '=' + c + '(报告' + n + ')';
+  }).join(' '));
 ok('行情系数回归文件存在', existsSync(resolve(root, 'tests/market-rules.cjs')));
 ok('拍卖规则回归文件存在', existsSync(resolve(root, 'tests/auction-rules.cjs')));
 ok('拍卖变异测试文件存在', existsSync(resolve(root, 'tests/auction-mutation.cjs')));
@@ -275,6 +321,7 @@ ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.
 ok('基础玩法变异测试文件存在', existsSync(resolve(root, 'tests/loop-mutation.cjs')));
 ok('随机局扫描文件存在', existsSync(resolve(root, 'tests/fuzz.cjs')));
 ok('构建保留回归文件存在', existsSync(resolve(root, 'tests/build-retention.cjs')));
+ok('构建孤儿产物捞回回归文件存在', existsSync(resolve(root, 'tests/build-orphan-salvage.cjs')));
 
 /* 6b-2. 基础玩法这一轮修的几处，必须在源码里真的成立。
  * 这些都是「差一点就出大问题」的地方，写在这里是为了防止以后有人
@@ -600,9 +647,6 @@ ok('D2 派队时校验档位的世界归属',
 ok('D2 跨界派队被拒时给出可读提示',
   /dispatch_fail[\s\S]{0,200}?'这里派不出去'/.test(sendDispatchBody));
 
-/* D4：定价规则 —— 费率占比、递增性。
- * 期望货值 = 满载毛均值 × (1 − 空手率)，
- * 满载毛均值由 core 的战利品表决定，这里按 SKU 单价和件数区间算。 */
 const lootTables = (() => {
   const i = core.indexOf('var _DISPATCH_LOOT={');
   if (i < 0) return {};
@@ -613,30 +657,89 @@ const lootTables = (() => {
     else if (core[k] === '}') { depth--; if (depth === 0) { end = k; break; } }
   }
   const out = {};
-  const re = /(\w+)\s*:\s*\{([^{}]*)\}/g;
-  let m;
-  while ((m = re.exec(core.slice(open + 1, end)))) {
-    const inner = m[2];
+  /* 按括号配平切块 —— 稀有门槛 rare:{...} 是嵌套对象，
+   * 用 [^{}]* 的话整个档位都解析不出来。
+   * （当初的解析器正好把 D5 那一块解析不出来，
+   *   于是「没有战利品表」和「战利品表没有稀有门槛」在断言上是同一种失败。） */
+  const body = core.slice(open + 1, end);
+  let idx = 0;
+  const re = /(\w+)\s*:\s*\{/g;
+  while (idx < body.length) {
+    re.lastIndex = idx;
+    const hit = re.exec(body);
+    if (!hit) break;
+    const braceStart = hit.index + hit[0].length - 1;
+    let d = 0, j = braceStart;
+    for (; j < body.length; j++) {
+      if (body[j] === '{') d++;
+      else if (body[j] === '}') { d--; if (d === 0) break; }
+    }
+    const inner = body.slice(braceStart + 1, j);
+    idx = j + 1;
     const skusM = inner.match(/skus\s*:\s*\[([^\]]*)\]/);
     const countM = inner.match(/count\s*:\s*\[\s*([0-9]+)\s*,\s*([0-9]+)\s*\]/);
     if (!skusM || !countM) continue;
-    out[m[1]] = {
+    const rareM = inner.match(/rare\s*:\s*\{([^{}]*)\}/);
+    let rare = null;
+    if (rareM) {
+      const cm = rareM[1].match(/chance\s*:\s*([0-9.]+)/);
+      const rm = rareM[1].match(/skus\s*:\s*\[([^\]]*)\]/);
+      rare = {
+        chance: cm ? Number(cm[1]) : 0,
+        skus: rm ? rm[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : []
+      };
+    }
+    out[hit[1]] = {
       skus: skusM[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean),
-      countLo: Number(countM[1]), countHi: Number(countM[2])
+      countLo: Number(countM[1]), countHi: Number(countM[2]),
+      rare: rare
     };
   }
   return out;
 })();
-const grossOf = (tierKey) => {
-  const spec = lootTables[tierKey];
-  if (!spec || !spec.skus.length) return null;
-  const prices = spec.skus.map(id => (CATALOG[id] || {}).basePrice).filter(p => typeof p === 'number');
-  if (!prices.length) return null;
-  const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-  return avg * ((spec.countLo + spec.countHi) / 2);
-};
+
+/* D4：定价规则 —— 费率占比、递增性。
+ *
+ * 这里**不重写**期望值的算法，而是直接调 core 导出的
+ * _generateDispatchLoot 和 computePrice 做真实模拟。
+ *
+ * 原因：这份脚本以前用的是「SKU 单价均值 × 件数中点」，
+ * 而实现是「按稀有门槛抽 SKU、按品质区间抽品质、再乘品质乘数」。
+ * 两套模型各错各的 —— 缺陷 D5（宗门遗迹没有稀有门槛）就是这么被放过的：
+ * 实现的日均净期望是 ¤137，这个脚本算出来的却是另一个数，
+ * 两边对不上，断言也就没有红。
+ *
+ * 现在期望值只有一个来源：实现自己。 */
+const ECON_SAMPLES = 20000;
+const BASE_MARKET = {coefficients: {}};
 const dispatchGross = {};
-Object.keys(dispatchTiers).forEach(k => { dispatchGross[k] = grossOf(k); });
+const dispatchRareRates = {};
+for (const k of Object.keys(dispatchTiers)) {
+  if (typeof Core._generateDispatchLoot !== 'function') break;
+  let sum = 0;
+  let itemCount = 0;
+  const rareHits = {};
+  const rareIds = (lootTables[k] && lootTables[k].rare && lootTables[k].rare.skus) || [];
+  for (let s = 0; s < ECON_SAMPLES; s++) {
+    const items = Core._generateDispatchLoot(k);
+    let v = 0;
+    for (const it of items) {
+      v += Core.computePrice(BASE_MARKET, it);
+      if (rareIds.indexOf(it.skuId) >= 0) {
+        rareHits[it.skuId] = (rareHits[it.skuId] || 0) + 1;
+      }
+    }
+    sum += v;
+    itemCount += items.length;
+  }
+  dispatchGross[k] = sum / ECON_SAMPLES;
+  dispatchRareRates[k] = rareIds.length && itemCount
+    ? rareIds.reduce((a, id) => a + (rareHits[id] || 0), 0) / itemCount
+    : 0;
+}
+ok('D4 core 导出了 _generateDispatchLoot（经济断言必须用真实实现）',
+  typeof Core._generateDispatchLoot === 'function',
+  '期望值只能有一个来源：实现自己');
 ok('D4 每个派遣档位都有对应的战利品表',
   Object.keys(dispatchTiers).every(k => dispatchGross[k] != null),
   '档位和战利品表必须一一对应');
@@ -674,6 +777,149 @@ function staminaEV(k) {
   const stam = 15 + dispatchTiers[k].days * 2;
   return (dispatchGross[k] * (1 - dispatchTiers[k].empty) - dispatchTiers[k].fee) / stam;
 }
+
+/* 6b-7. 派遣经济这一轮修的几处（缺陷 D5）。
+ *
+ * D5-1 稀有门槛必须由**数据**决定，不能按档位名写死
+ *    以前 _generateDispatchLoot 里有两个写死的分支：
+ *      if (destination === 'midrange') ...
+ *      if (destination === 'deepzone') ...
+ *    于是 sect_ruins（宗门遗迹）**完全没有稀有门槛**。
+ *    它的 SKU 单价均值 ¤383、品质 3–5，
+ *    一把 ¤1500 的储物戒于是有 1/20 的概率出现在每个槽位上。
+ *    实测宗门遗迹日均净期望 ¤137，是深入禁区（¤55）的 2.49 倍 ——
+ *    5 天的中途档完胜 7 天的最远档，换界从取舍变成了纯赚。
+ *
+ * D5-2 门槛必须由档位自己声明（rare:{chance, skus}）
+ *    加新档位时漏写门槛，就是上面那个 bug 的成因。
+ *    门槛挂在表上，加档位的人不写就没有 —— 但至少「没写」这件事
+ *    在数据里是看得见的，测试能抓到。
+ *
+ * D5-3 稀有品不得留在普通池里
+ *    命中门槛时整槽从稀有池抽，否则从排除了稀有品的普通池抽。
+ *    稀有品留在普通池里的话，它会被双重计入：
+ *    实际稀有率 = chance + (1−chance) × 普通池里稀有品占比。
+ *
+ * D5-4 门槛条件不得用 chance>0
+ *    写成 `spec.rare.chance>0` 时，chance=0 会让**整道门槛被跳过**，
+ *    稀有品回到普通池 —— 出现率不降反升。
+ *    这是一个**潜伏 bug**：现有档位 chance 都 > 0，看不出来。
+ *
+ * D5-5 跨世界的最长档必须对标
+ *    两个世界的最深档日均净期望不能差 2 倍以上，
+ *    否则玩家会一股脑涌向收益高的那个世界。 */
+const lootGate = (() => {
+  const out = {};
+  for (const k of Object.keys(lootTables)) {
+    if (lootTables[k].rare) out[k] = lootTables[k].rare;
+  }
+  return out;
+})();
+
+ok('D5-1 战利品生成器里没有按档位名写死的分支',
+  !/destination\s*===/.test(stripComments(
+    (() => {
+      const i = core.indexOf('function _generateDispatchLoot');
+      return i >= 0 ? core.slice(i, i + 1400) : '';
+    })()
+  )),
+  '按档位名写分支 = 每加一个档位都要记得改一次代码，漏改就是 D5');
+
+ok('D5-2 稀有门槛挂在档位数据上（rare:{chance,skus}）',
+  Object.keys(lootGate).length >= 3 &&
+    Object.keys(lootGate).every(k => lootGate[k].chance !== null && lootGate[k].skus.length > 0),
+  '门槛必须声明在数据里，键=' + Object.keys(lootGate).join(','));
+ok('D5-2 宗门遗迹也声明了稀有门槛',
+  lootGate.sect_ruins && lootGate.sect_ruins.chance > 0,
+  'D1 修好之后它就成了可用的档位，必须同时有门槛');
+ok('D5-2 三个长途档都声明了稀有门槛',
+  ['midrange', 'deepzone', 'sect_ruins'].every(k => lootGate[k] && lootGate[k].chance > 0),
+  '缺一个就多一个套利口子');
+
+ok('D5-3 稀有品不在普通池里（不被双重计入）',
+  Object.keys(lootGate).every(k => {
+    const spec = lootTables[k];
+    if (!spec) return true;
+    const commons = spec.skus.filter(id => lootGate[k].skus.indexOf(id) === -1);
+    return commons.every(id => lootGate[k].skus.indexOf(id) === -1);
+  }),
+  '稀有品留在普通池里 → 实际稀有率 = chance + (1−chance)×普通池占比');
+
+ok('D5-3 稀有品实际出现频率与声明的门槛一致',
+  Object.keys(lootGate).every(k => {
+    const declared = lootGate[k].chance;
+    const actual = dispatchRareRates[k] || 0;
+    if (declared === 0) return actual === 0;
+    return Math.abs(actual - declared) < 0.06;
+  }),
+  Object.keys(lootGate).map(k =>
+    k + '=' + ((dispatchRareRates[k] || 0) * 100).toFixed(1) + '%/' +
+    (lootGate[k].chance * 100).toFixed(0) + '%').join(' '));
+
+ok('D5-4 门槛条件不得用 chance>0（会把 0 判成假，整道门槛被跳过）',
+  !/spec\.rare\.chance\s*>\s*0/.test(stripComments(
+    (() => {
+      const i = core.indexOf('function _generateDispatchLoot');
+      return i >= 0 ? core.slice(i, i + 1400) : '';
+    })()
+  )),
+  'chance=0 时整道门槛被跳过，稀有品出现率不降反升');
+
+const longestByWorld = {};
+for (const w of Object.keys(groupBy('wasteland_nuclear').length ? {
+  wasteland_nuclear: groupBy('wasteland_nuclear'),
+  xianxia_sect: groupBy('xianxia_sect')
+} : {})) {
+  const g = groupBy(w);
+  longestByWorld[w] = g[g.length - 1];
+}
+const deepA = longestByWorld.wasteland_nuclear;
+const deepB = longestByWorld.xianxia_sect;
+if (deepA && deepB) {
+  const ra = dailyEV(deepA), rb = dailyEV(deepB);
+  const ratio = Math.max(ra, rb) / Math.min(ra, rb);
+  ok('D5-5 两个世界的最长档日均净期望对标（不超过 2 倍）',
+    ratio <= 2.0,
+    deepA + '=¤' + ra.toFixed(1) + ' vs ' + deepB + '=¤' + rb.toFixed(1) +
+    '（' + ratio.toFixed(2) + '×）');
+}
+
+/* 6d. 构建脚本的「孤儿哈希产物捞回」（缺陷 D6，本轮新增）
+ *
+ * scripts/build.mjs 承诺过：
+ *   「旧链接在 CDN 上可能还有人访问，重建时不能凭空让它们 404」
+ * 为了兑现这个承诺，它会扫一遍 dist/，
+ * 把**清单没记、但磁盘上还在**的哈希产物补进 retained。
+ *
+ * 那段代码原来是坏的：
+ *   walk('dist') 返回 'dist/src/xxx.js'，
+ *   直接当成 retained 的键 →
+ *   resolve(root,'dist','dist/src/xxx.js') = 'dist/dist/src/xxx.js'
+ *   → 文件不存在 → 全部 continue 掉。
+ *
+ * 也就是说这段逻辑**从来没生效过**：
+ * 每次源码改动、哈希文件名一变，旧的哈希产物就变成没人记录的孤儿，
+ * dist/ 无限膨胀，清单里也查不到。
+ *
+ * 这里做源码级断言：孤儿扫描的键必须剥掉 'dist/' 前缀。 */
+const buildSrc = src('scripts/build.mjs');
+const orphanScanIdx = buildSrc.indexOf("walk('dist')");
+ok('D6 构建脚本里存在孤儿哈希产物扫描',
+  orphanScanIdx >= 0,
+  '构建脚本必须扫描 dist/，把清单没记的哈希产物捞回 retained');
+if (orphanScanIdx >= 0) {
+  const scanBlock = buildSrc.slice(orphanScanIdx, orphanScanIdx + 700);
+  ok('D6 孤儿扫描的路径必须剥掉 dist/ 前缀',
+    /replace\(\s*\/\^dist/.test(scanBlock) || /rel\s*=\s*dir\.replace/.test(scanBlock),
+    '键必须是相对 dist/ 根的 src/xxx.js；' +
+    '带 dist/ 前缀会让 resolve(root,\'dist\',path) 指向 dist/dist/...，' +
+    'existsSync 永远为假，整段捞回逻辑等于没写');
+  ok('D6 孤儿扫描不能直接把带 dist/ 前缀的路径当键',
+    !/candidates\.set\(dir\s*,/.test(scanBlock),
+    'candidates.set(dir,...) 里的 dir 带 dist/ 前缀，等于没修');
+}
+ok('D6 孤儿产物捞回回归文件存在',
+  existsSync(resolve(root, 'tests/build-orphan-salvage.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

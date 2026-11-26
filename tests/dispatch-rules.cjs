@@ -188,20 +188,70 @@ function readLootTables() {
   }
   const body = src.slice(open + 1, end);
   const out = {};
-  const re = /(\w+)\s*:\s*\{([^{}]*)\}/g;
-  let m;
-  while ((m = re.exec(body))) {
-    const inner = m[2];
+
+  /* 必须**按括号配平**切档位，不能用 `\{([^{}]*)\}`。
+   *
+   * 以前这里用的是 [^{}]*，于是**档位里一旦出现嵌套对象就整个解析不出来**。
+   * 而它恰恰在稀有门槛上线那天炸了：
+   *   midrange 变成 {skus:[...], count:[...], qualityRange:[...], rare:{chance:..,skus:[..]}}
+   * 里面有嵌套的 {} → [^{}]* 匹配不上 → midrange 这档「没有战利品表」→
+   * 读取函数 assert 直接炸在 grossAverage 里。
+   *
+   * 这不是巧合：这个脆弱的解析器**正好**把缺陷 D5 的那块表解析不出来。
+   * 如果当时解析器结实一点，D5 也许早就暴露了 ——
+   * 因为「没有战利品表」和「战利品表没有稀有门槛」在断言上是同一种失败。
+   *
+   * 现在按深度扫：找到每个顶层档位的开括号，配平到它的闭括号，
+   * 里面的嵌套内容整段保留。 */
+  let i = 0;
+  while (i < body.length) {
+    // 找下一个 `ident:{`。
+    // 不能用 /^(\w+)\s*:\s*\{/m —— ^ 配 m 只认 \n，
+    // 而文件是 CRLF，每行前面还有一个 \r，`^\w+` 永远匹配不上。
+    const m = /(\w+)\s*:\s*\{/g;
+    m.lastIndex = i;
+    const hit = m.exec(body);
+    if (!hit) break;
+    const name = hit[1];
+    const braceStart = hit.index + hit[0].length - 1;
+    let d = 0, j = braceStart;
+    for (; j < body.length; j++) {
+      if (body[j] === '{') d++;
+      else if (body[j] === '}') { d--; if (d === 0) break; }
+    }
+    const inner = body.slice(braceStart + 1, j);
+    i = j + 1;
+
     const skusMatch = inner.match(/skus\s*:\s*\[([^\]]*)\]/);
     const countMatch = inner.match(/count\s*:\s*\[\s*([0-9]+)\s*,\s*([0-9]+)\s*\]/);
+    const qMatch = inner.match(/qualityRange\s*:\s*\[\s*([0-9]+)\s*,\s*([0-9]+)\s*\]/);
     if (!skusMatch || !countMatch) continue;
     const skus = skusMatch[1].split(',')
       .map(s => s.trim().replace(/^['"]|['"]$/g, ''))
       .filter(Boolean);
-    out[m[1]] = {
+
+    /* 稀有门槛（rare:{chance,skus}）—— 也要读出来，
+     * 经济测试要靠它还原真实的稀有概率。 */
+    let rare = null;
+    const rareMatch = inner.match(/rare\s*:\s*\{([^{}]*)\}/);
+    if (rareMatch) {
+      const chanceMatch = rareMatch[1].match(/chance\s*:\s*([0-9.]+)/);
+      const rareSkusMatch = rareMatch[1].match(/skus\s*:\s*\[([^\]]*)\]/);
+      rare = {
+        chance: chanceMatch ? Number(chanceMatch[1]) : 0,
+        skus: rareSkusMatch ? rareSkusMatch[1].split(',')
+          .map(s => s.trim().replace(/^['"]|['"]$/g, ''))
+          .filter(Boolean) : []
+      };
+    }
+
+    out[name] = {
       skus,
       countLo: Number(countMatch[1]),
-      countHi: Number(countMatch[2])
+      countHi: Number(countMatch[2]),
+      qualityLo: qMatch ? Number(qMatch[1]) : 1,
+      qualityHi: qMatch ? Number(qMatch[2]) : 3,
+      rare: rare
     };
   }
   return out;
@@ -213,17 +263,66 @@ function catalogPrices() {
   Object.keys(cat).forEach(function (id) { out[id] = cat[id].basePrice; });
   return out;
 }
-/* 满载毛均值 = 平均件数 × 平均单价 */
-function grossAverage(tierKey, loot, prices) {
+/* 满载毛均值的**真实模拟**。
+ *
+ * 以前这里是 `avgPrice × avgCount` —— 也就是
+ * 「SKU 单价的算术平均」乘以「件数区间的中点」。这个模型有四个漏洞：
+ *   1. 不算品质乘数（qualityRange），而各档位的品质区间差别极大：
+ *      suburb 是 1–3、sect_ruins 是 3–5 —— 差整整一档（1.4× vs 1.0×）。
+ *   2. 不算稀有门槛。midrange / deepzone / sect_ruins 的稀有品
+ *      概率和普通货完全不一样。
+ *   3. 不算空手率（放在别处算，但毛均值本身就已经失真了）。
+ *   4. SKU 单价是**均匀**平均，可实际抽取是按概率的。
+ *
+ * 这四个漏洞叠在一起，正好把缺陷 D5 盖住了：
+ * sect_ruins 的稀有门槛缺失，在朴素模型里看不出来
+ * （因为朴素模型本来就不看稀有门槛），
+ * 于是「宗门遗迹日均是禁区的 2.49 倍」这件事，
+ * 一路畅通无阻地进了 AUDIT.md 的结论表。
+ *
+ * 现在改成**逐次模拟**：按 core 的真实规则抽 SKU、按真实规则抽品质、
+ * 按真实规则应用稀有门槛。模型和实现同源，改实现就得改这里 ——
+ * 而这正是我们想要的：实现一改，经济断言立刻红。
+ *
+ * 抽样次数不能太小：稀有门槛是 10%–30%，尾部分位数需要足够的样本。
+ * 20000 次足够把均值的标准误压到 1% 以内。 */
+/* 这里**不重写**战利品生成规则。
+ *
+ * 原来这个文件里有一份手写的 simulateTier —— 自己抽 SKU、自己抽品质、
+ * 自己算品质乘数，还自己实现了一遍稀有门槛。
+ * 那份副本有个致命问题：它把门槛条件写成了 `spec.rare.chance > 0` ——
+ * 也就是 core 里那个**已经被修掉的 bug 的原样**。
+ * 测试里的副本有 bug、实现里的没有，两边算出来的数对不上，
+ * 断言于是间歇性翻车。
+ *
+ * 现在统一走 dispatch-econ-model.cjs：它调的是 core 导出的
+ * **真实** _generateDispatchLoot 和 computePrice。
+ * 一个来源，没有副本，也就没有漂移。 */
+const econModel = require('./dispatch-econ-model.cjs');
+
+function simulateTier(tierKey, loot, prices, qualityMult, samples) {
   const spec = loot[tierKey];
   assert.ok(spec, 'no loot table for tier ' + tierKey);
   assert.ok(spec.skus.length, 'loot table for ' + tierKey + ' has no skus');
   const missing = spec.skus.filter(id => prices[id] === undefined);
   assert.deepEqual(missing, [],
     'tier ' + tierKey + ' lists skus that are not in ITEM_CATALOG: ' + missing.join(','));
-  const avgPrice = spec.skus.reduce((s, id) => s + prices[id], 0) / spec.skus.length;
-  const avgCount = (spec.countLo + spec.countHi) / 2;
-  return avgPrice * avgCount;
+
+  /* 真正跑一次实现，拿到真实的分布。 */
+  const sim = econModel.simulateRun(tierKey, { samples: samples || 20000 });
+  return {
+    mean: sim.meanGross,
+    p10: sim.p10,
+    p50: sim.p50,
+    p90: sim.p90,
+    p99: sim.p99,
+    max: sim.max
+  };
+}
+
+/* 保留旧接口给不关心分布的调用点，但内部换成了真实模拟。 */
+function grossAverage(tierKey, loot, prices, qualityMult) {
+  return simulateTier(tierKey, loot, prices, qualityMult).mean;
 }
 
 /* ══ 一、D1：UI 必须渲染传入的每一个档位 ═════════════════════ */
@@ -434,9 +533,17 @@ console.log('\n[四] 档位定价规则');
    * 再加一条硬底线：任何档位的费率占比都不能超过 40%。 */
   const loot = readLootTables();
   const prices = catalogPrices();
+  /* 品质乘数从 core 里取 —— 模拟必须用**实现用的那张表**，
+   * 不能自己抄一份常量（抄了就等于把同一处错误抄了两遍）。 */
+  const qualityMult = (function () {
+    const s = createSession();
+    return s.window.WastelandCore.QUALITY_MULT;
+  })();
   const GROSS = {};
+  const DIST = {};
   Object.keys(tiers).forEach(function (k) {
-    GROSS[k] = grossAverage(k, loot, prices);
+    DIST[k] = simulateTier(k, loot, prices, qualityMult);
+    GROSS[k] = DIST[k].mean;
   });
 
   test('每个档位都有对应的战利品表', function () {
@@ -447,7 +554,7 @@ console.log('\n[四] 档位定价规则');
 
   test('战利品表里的 SKU 都存在于物品目录', function () {
     Object.keys(tiers).forEach(function (k) {
-      grossAverage(k, loot, prices);   // 里面会 assert 缺失的 SKU
+      simulateTier(k, loot, prices, qualityMult, 200);   // 里面会 assert 缺失的 SKU
     });
   });
 
