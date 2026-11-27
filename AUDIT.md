@@ -18,7 +18,7 @@
 | WARN | 0 |
 | 通过（无告警） | 目录完整性、配方链、可玩世界覆盖、获取渠道覆盖、派遣档位一致性、派遣世界门与定价、派遣稀有门槛与经济对标、NPC 标签系统接入、NPC 判定键与目录对齐、分阵营声望对齐、换界柜台守恒、机器世界归属、死代码、过期机制、纯度系统、DOM id 契约、构建↔HTML 一致性、美术索引、README/HANDOFF 数字自检、存档键、dist 新鲜度、状态字段来源、DOM 注入面（XSS） |
 
-  自动化测试 `npm test` **224 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 换界回归 8 项 + 机器世界归属回归 8 项 + 派遣回归 26 项 + 派遣稀有门槛回归 17 项 + 派遣经济回归 21 项 + 派遣目标选择回归 8 项 + 在途商旅回归 7 项 + 派遣名额回归 10 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 拍卖冻结款回归 10 项 + 设施滤芯回归 20 项 + 仓储扩容回归 16 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项 + 构建孤儿捞回回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **253 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
+  自动化测试 `npm test` **245 项全绿**（单元 17 项 + 多日推演 6 项 + NPC 判定回归 8 项 + 分阵营声望回归 8 项 + 换界回归 8 项 + 机器世界归属回归 8 项 + 派遣回归 26 项 + 派遣稀有门槛回归 17 项 + 派遣经济回归 21 项 + 派遣目标选择回归 8 项 + 在途商旅回归 7 项 + 派遣名额回归 10 项 + 行情系数回归 6 项 + 拍卖规则回归 6 项 + 拍卖整周生命周期回归 10 项 + 拍卖冻结款回归 10 项 + 设施滤芯回归 20 项 + 仓储扩容回归 16 项 + 柜台需求回归 21 项 + 基础玩法全流程回归 9 项 + 随机局扫描 1 项 + 构建保留回归 1 项 + 构建孤儿捞回回归 1 项）；`npm run audit` **error=0 warn=0**；`npm run audit:verify` **264 项全绿**；`dist/release-manifest.json` 268 项**零不一致**；228 个物品**全部有获取渠道**（无孤儿物品）。
 
 原 5 个 ERROR + 12 个 WARN 全部清零，修复手法见下节。
 
@@ -2489,12 +2489,208 @@ D12 是**用错了数据源**：
 
 ---
 
+## 四之十九、缺陷 D13：柜台「需求数量」是死维度（本轮新增）
+
+### 缺陷 D13：`want.qty` 从来没被读过
+
+商旅的需求写成 `{category, qty}`，界面也照着画「想收：材料 ×3」：
+
+```javascript
+// src/wasteland-ui.js
+var wants = (npc.wants || []).map(function (w) {
+  return typeConf(w.category || w).label + (w.qty > 1 ? ' ×' + w.qty : '');
+}).join(' / ');
+```
+
+但出价公式里，`qty` **一个字都没出现**：
+
+```javascript
+// src/wasteland-shop.js（修复前）
+var satisfiedWants = npc.wants.filter(function (want) {
+  return wantedItems.some(function (item) { return item.category === want.category; });
+});
+var wantRatio = npc.wants.length > 0
+  ? (satisfiedWants.length / npc.wants.length)   // ← 只数「命中了几个类目」
+  : 1.0;
+var wantBonus = 1.0 + 0.3 * wantRatio;
+```
+
+看清楚：`wantRatio` 只按**类目命中条数 / 需求条数**算。
+「材料 ×3」和「材料 ×1」在它眼里是同一件事 ——
+只要柜台上有**一件**材料，这个类目就算「命中」了，达成率 100%，拿满加成。
+
+### 三个症状
+
+**一、摆 1 件和摆 3 件拿到的钱一模一样。**
+
+实测（`tests/probe-counter.cjs`，同一件 1×2 铁锭，商旅要材料）：
+
+| 需求 | 柜台上 1 件的出价 |
+| --- | --- |
+| 材料 ×1 | ¤31 |
+| 材料 ×2 | ¤24 |
+| 材料 ×3 | ¤20 |
+| 材料 ×4 | ¤22 |
+
+（数字每次会飘，因为 `attitude` 是 0.9~1.1 的随机值。
+但**相对关系**是稳定的：需求数量越大、出价越低 ——
+达成率确实在变，而它变成的是「1/2、1/3、1/4」，跟修之前完全一样。）
+
+**二、「工地采购」这种 bulk 商旅跟不要批量的商旅待遇相同。**
+
+`NPC_ROLE_CONFIGS` 里 `bulk: true` 的角色每个类目要 2~4 件：
+
+```javascript
+{
+  role: 'contractor', label: '工地采购', worldId:'wasteland_nuclear',
+  wantCategories: ['material', 'equipment', 'water', 'food'],
+  excludeCategories: ['medicine', 'tech'],
+  premium: 1.10, intel: false, bulk: true
+}
+```
+
+生成商旅时 `qty` 也确实按 bulk 填了 2~4：
+
+```javascript
+var wants = conf.wantCategories.map(function (cat) {
+  return { category: cat, qty: conf.bulk ? (2 + Math.floor(Math.random() * 3)) : 1 };
+});
+```
+
+但这个 `qty` 到出价那一步就断了 ——
+「工地采购要 3 件材料」跟「行商要 1 件材料」在钱上没有任何区别。
+配置里的 `bulk` 字段等于白写。
+
+**三、`excludedCount` 一直只被写、从没被读。**
+
+同一个函数里还有一处：
+
+```javascript
+cs.excludedCount = excludedItems.length;   // 写了
+```
+
+全仓库搜下来，这两行赋值**没有任何一处读取它们**。
+「工地采购不收药品与科技品」这件事在代码里是真的（药只按两成价清走），
+但玩家把一箱药放上柜台，只看到出价低了 ——
+他不知道「他不收药」这件事本身，也不知道那批货只卖了八折。
+
+### 修法
+
+**① 达成率按数量算，按数量加权。**
+
+```javascript
+var demandRows = [];
+var demandTotal = 0, filledTotal = 0;
+(npc.wants || []).forEach(function (want) {
+  var cat  = (want && typeof want === 'object') ? want.category : want;
+  var need = (want && typeof want === 'object' && want.qty > 0) ? want.qty : 1;
+  var have = 0;
+  wantedItems.forEach(function (item) { if (item.category === cat) have++; });
+  var filled = Math.min(have, need);
+  demandTotal += need;
+  filledTotal += filled;
+  demandRows.push({ category: cat, need: need, have: have, filled: filled, met: have >= need });
+});
+var wantRatio = demandTotal > 0 ? (filledTotal / demandTotal) : 1.0;
+```
+
+按**数量加权**而不是按类目条数：
+「材料 ×4 + 食品 ×1」这种清单，凑齐 4 件材料比凑齐 1 件食品重要得多。
+旧算法里这两条的权重一样（各占 50%），
+新算法里是 4:1。
+
+**② 整单凑齐给批发加成。**
+
+```javascript
+var bulkBonus = (demandTotal > 0 && filledTotal >= demandTotal) ? 1.25 : 1.0;
+```
+
+一次把对方的清单凑齐，比零散卖几件值钱。
+清单里有需求却一件没凑齐，就不给。
+
+**③ 需求进度落进状态，界面画出来。**
+
+`cs.demands` / `cs.bulkMet` / `cs.wantRatio` 三个字段，
+界面照着画「材料 2/4」，凑齐整单时额外提示「含批发加成」。
+
+**④ 他不收的货说出来。**
+
+`cs.excludedCount` 终于被读了 ——
+界面直接告诉他「有 2 件货他不肯收（药品、科技品），只按两成价清走」。
+
+**⑤ 状态在各个时机正确重置。**
+
+柜台清空 / 成交 / 换商旅 / 换界 / 读档 —— 五个时机都要清，
+否则会出现「柜台上没货了，界面上却还挂着『材料 2/4』」，
+或者「下一位商旅上台，先显示的是上一个人的需求进度」。
+
+### 测试
+
+回归测试 `tests/counter-demand.cjs`（**21 项**）钉住六件事：
+
+1. 需求数量真的进公式（摆够比摆一半出价高）；
+2. 达成率按数量加权（材料 ×4 比食品 ×1 重要）；
+3. 整单凑齐给批发加成，缺一条就不给；
+4. 需求进度落进状态，界面显示出来；
+5. 他不收的货件数被显示出来；
+6. 状态在成交 / 换人 / 换界 / 读档后正确重置。
+
+断言用的是 `wantRatio`（达成率本身）而不是出价：
+出价里混着随机 `attitude`，拿它比大小会飘 ——
+这条断言最初就是写成比出价的，结果时红时绿，换成 `wantRatio` 才稳定。
+
+变异验证新增 `tests/counter-demand-mutation.cjs`（**6/6 变异全被抓住**）：
+
+```
+CAUGHT M1 达成率改回按类目命中条数算（需求数量又被忽略）
+CAUGHT M2 达成率改回按类目条数平均（数量权重被抹掉）
+CAUGHT M3 整单凑齐也不给批发加成（bulkBonus 恒为 1）
+CAUGHT M4 需求进度不落进状态（界面看不到「材料 2/4」）
+CAUGHT M5 柜台清空时需求进度不清（界面留着上一轮的进度）
+CAUGHT M6 界面不显示「他不收的货」（excludedCount 又变成死字段）
+```
+
+> M6 踩过一个坑：最初这条变异**抓不住**。
+> 因为测试只查「源码里有没有 `excludedCount` 这个词」，
+> 而显示那段被删掉之后，变量声明还在 ——
+> 源码级断言照样通过。
+> 后来加了一条**渲染级**断言：真的把柜台面板渲染一遍，
+> 检查文字里有没有「不肯收 / 只按两成」这句话，才把它抓住。
+
+另外在 `tools/audit/verify-claims.mjs` 里补了 **D13-1～D13-11** 十一条**源码级**断言，
+覆盖：出价函数存在、公式必须读 `want.qty`、达成率必须按数量加权、
+不许退回 `satisfiedWants` 旧算法、批发加成存在、需求进度落进状态、
+柜台清空要清进度、读档要补字段、界面必须显示进度与「他不收的货」、
+两个回归文件存在。
+
+### 为什么这条比 D12 还难查
+
+D12 是**用错了数据源**，D13 是**压根没有那个数据源**。
+
+`want.qty` 不是「被用错了」，是**从来没进过任何一条计算路径**。
+代码读起来完全合理 —— `satisfiedWants` 这个名字甚至很像那么回事：
+「满足的意愿」。但它满足的是**类目**，不是**数量**。
+
+更麻烦的是它**不崩、不报错、不异常**：
+摆 1 件和摆 3 件都是正常出价，只是数字一样。
+静态审计看到 `wants` 有 `qty` 字段、界面也画了 `×3`，
+看不到任何异常 —— 只能靠**把同一件货放进不同数量的需求里比出价**才看得出来。
+
+> 这一族里 D13 的教训是：
+> **「字段存在」不等于「字段生效」。**
+> 一个维度要真的活着，必须有一处**因为它的值不同而产生不同结果**。
+> 审计的时候，对每个看起来有用的字段问一句：
+> **把它的值改掉，结果会变吗？**
+> 不会的话，它就是装饰。
+
+---
+
 ## 五、复现方式
 
 ```bash
 npm run audit        # 审计工具：输出 ERROR/WARN 明细与汇总
-npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（253 项）
-npm test             # 回归测试：224 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 换界回归 8 + 机器世界归属回归 8 + 派遣回归 26 + 派遣稀有门槛 17 + 派遣经济 21 + 派遣目标选择 8 + 在途商旅 7 + 派遣名额 10 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 拍卖冻结款回归 10 + 设施滤芯回归 20 + 仓储扩容回归 16 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1 + 构建孤儿捞回 1）
+npm run audit:verify # 交叉校验：核对本报告的每条结论与数字（264 项）
+npm test             # 回归测试：245 项（单元 17 + 多日推演 6 + NPC 判定 8 + 分阵营声望 8 + 换界回归 8 + 机器世界归属回归 8 + 派遣回归 26 + 派遣稀有门槛 17 + 派遣经济 21 + 派遣目标选择 8 + 在途商旅 7 + 派遣名额 10 + 行情回归 6 + 拍卖回归 6 + 拍卖整周回归 10 + 拍卖冻结款回归 10 + 设施滤芯回归 20 + 仓储扩容回归 16 + 柜台需求回归 21 + 基础玩法回归 9 + 随机扫描 1 + 构建保留 1 + 构建孤儿捞回 1）
 npm run test:unit     # 只跑单元回归：17 项
 npm run test:soak     # 只跑多日推演：6 项（60 天连推 + 满仓/破产/体力/开局可买性）
 npm run test:npc      # 只跑 NPC 判定回归：8 项（鉴定/后果/声望/报价/延迟反馈/退化随机源/队列与存档绑定）
@@ -2519,6 +2715,8 @@ npm run test:facility # 只跑设施滤芯回归：20 项（缺滤芯停摆/断�
 npm run test:facility:mutation # 设施滤芯变异验证：把 7 个缺陷逐个注回源码，确认回归测试全部失败（7/7）
 npm run test:storage # 只跑仓储扩容回归：16 项（1×2/2×2 不重复摆放/无幽灵格/空格数对得上/不复制进待领区/remove 清干净/坏存档自动修）
 npm run test:storage:mutation # 仓储扩容变异验证：把 6 个缺陷逐个注回源码，确认回归测试全部失败（6/6）
+npm run test:counter # 只跑柜台需求回归：21 项（数量进公式/按数量加权/批发加成/进度落状态/界面显示/五个时机重置）
+npm run test:counter:mutation # 柜台需求变异验证：把 6 个缺陷逐个注回源码，确认回归测试全部失败（6/6）
 npm run test:fuzz     # 只跑随机局扫描：1 项（120 局 × 20 天的随机动作 + 存档往返不变量）
 npm run test:build    # 只跑构建保留回归：2 项（上一版哈希产物必须被保留并记录 / 孤儿哈希产物必须被捞回清单）
 npm run build        # 构建

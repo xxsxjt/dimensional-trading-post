@@ -1,4 +1,4 @@
-/* wasteland-shop.js – 界门交易行主入口 v3
+﻿/* wasteland-shop.js – 界门交易行主入口 v3
  * 依赖加载顺序：WastelandCore → WastelandNPC → WastelandUI → 本文件
  * 挂载点：<div id="wastelandShopMount"></div>
  */
@@ -1344,6 +1344,10 @@
       state.counterState.npc   = null;
       state.counterState.phase = 'idle';
       state.counterState.offer = null;
+      state.counterState.demands       = [];
+      state.counterState.bulkMet       = false;
+      state.counterState.excludedCount = 0;
+      state.counterState.wantRatio     = 1.0;
     }
     state.todayNPCs = generateDailyNPCs();
     state.todayEvents = (state.todayEvents || []).filter(function (e) {
@@ -1928,6 +1932,11 @@
     cs.npcId    = null;
     cs.offer    = null;
     cs.attitude = 1.0;
+    // 需求进度跟着柜台一起清（缺陷 D13）。
+    cs.demands       = [];
+    cs.bulkMet       = false;
+    cs.excludedCount = 0;
+    cs.wantRatio     = 1.0;
   }
 
   // ── handleCounterReturn：从槽位取回物品到仓库 ────────────
@@ -1948,6 +1957,12 @@
       evaluateCounterOffer();
     } else {
       cs.offer = null;
+      // 需求进度也要一起清（缺陷 D13）——
+      // 柜台上已经一件货都没有了，界面上却还挂着「材料 2/4」。
+      cs.demands       = [];
+      cs.bulkMet       = false;
+      cs.excludedCount = 0;
+      cs.wantRatio     = 1.0;
       // 柜台空了之后，phase 只能回到 'active' —— 那表示「有个商旅在柜前」。
       // 没有商旅（npcId 是空）时必须回到 'idle'，
       // 否则柜台会显示成「正在谈一笔没有对手的生意」。
@@ -1980,6 +1995,12 @@
     var itemIds = cs.slots.filter(Boolean);
     if (!itemIds.length) {
       cs.offer = null;
+      // 柜台空了，需求进度也要一起清掉 ——
+      // 否则界面上还挂着上一轮「材料 2/4」，而台面上一件货都没有。
+      cs.demands = [];
+      cs.bulkMet = false;
+      cs.excludedCount = 0;
+      cs.wantRatio = 1.0;
       return;
     }
 
@@ -1999,13 +2020,40 @@
       return excluded.indexOf(item.category) !== -1;
     });
 
-    // 满足 wants 的类目匹配度
-    var satisfiedWants = npc.wants.filter(function (want) {
-      return wantedItems.some(function (item) { return item.category === want.category; });
+    // ── 需求的「数量」必须真的算数 ────────────────────────────
+    //
+    // 缺陷 D13：`npc.wants` 里每条都有 `{category, qty}`，
+    // 界面也照着画成「想收：材料 ×3」，但出价只按**类目命中**算：
+    //   satisfiedWants = 命中类目的条数
+    //   wantRatio      = 命中条数 / 需求条数
+    // 也就是说 **qty 从来没被读过**。
+    // 玩家看到「材料 ×3」，摆 1 件和摆 3 件拿到的钱一模一样；
+    // 「工地采购」这种 bulk 商旅（每个类目要 2~4 件）跟不要批量的商旅待遇完全相同。
+    //
+    // 现在改成**按数量计**：
+    //   filled  = 该类目柜台上实际有的件数（上限取需求数）
+    //   wantRatio = 所有需求按数量加权后的平均达成率
+    // 摆够整单（所有 wants 都满足）额外给**批发加成**——
+    // 一次把对方的清单凑齐，比零散卖几件值钱。
+    //
+    // 权重按数量加权而不是按类目条数：
+    // 「材料 ×4 + 食品 ×1」这种清单，凑齐 4 件材料比凑齐 1 件食品重要得多。
+    var demandRows = [];
+    var demandTotal = 0, filledTotal = 0;
+    (npc.wants || []).forEach(function (want) {
+      var cat = (want && typeof want === 'object') ? want.category : want;
+      var need = (want && typeof want === 'object' && want.qty > 0) ? want.qty : 1;
+      var have = 0;
+      wantedItems.forEach(function (item) { if (item.category === cat) have++; });
+      var filled = Math.min(have, need);
+      demandTotal += need;
+      filledTotal += filled;
+      demandRows.push({ category: cat, need: need, have: have, filled: filled,
+                        met: have >= need });
     });
-    var wantRatio = npc.wants.length > 0
-      ? (satisfiedWants.length / npc.wants.length)
-      : 1.0;
+    var wantRatio = demandTotal > 0 ? (filledTotal / demandTotal) : 1.0;
+    // 整单凑齐的批发加成。清单里有需求却一件没凑齐，就不给。
+    var bulkBonus = (demandTotal > 0 && filledTotal >= demandTotal) ? 1.25 : 1.0;
     // 卖价锚定市价并略高于它（对味的货再加成）：商铺不是做慈善，
     // 拿到手的东西哪怕对方并不急需，也不该低于市价出手。
     var wantBonus = 1.0 + 0.3 * wantRatio;
@@ -2054,12 +2102,21 @@
       if (hasAged) agedBonus = 1.3;
     }
 
-    // 最终出价 = totalValue × premium × attitude × wantBonus × fakePenalty × agedBonus × 议价技能
-    var multiplier = npc.premium * cs.attitude * wantBonus * fakePenalty * agedBonus * negotiateBonus;
+    // 最终出价 = totalValue × premium × attitude × wantBonus × bulkBonus
+    //            × fakePenalty × agedBonus × 议价技能
+    var multiplier = npc.premium * cs.attitude * wantBonus * bulkBonus *
+                     fakePenalty * agedBonus * negotiateBonus;
     cs.offer = Math.max(1, Math.min(
       npc.budget,
       Math.round(totalValue * multiplier)
     ));
+    // 需求进度：界面照着画「材料 2/4」，玩家才知道该凑几件。
+    cs.demands = demandRows;
+    cs.bulkMet = bulkBonus > 1;
+    // 达成率本身也落进状态（0~1）。
+    // 界面拿它画进度条，测试拿它断言「数量真的进了公式」——
+    // 只看 offer 会被随机 attitude 干扰，量不出 1/2 与 1/4 的差别。
+    cs.wantRatio = wantRatio;
     cs.phase = 'negotiating';
   }
 
@@ -2157,6 +2214,12 @@
     cs.offer    = null;
     cs.npcId    = null;
     cs.attitude = 1.0;
+    // 需求进度与「他不肯收的件数」跟着柜台一起清空（缺陷 D13）。
+    // 留着的话，下一位商旅一上台，界面上先显示的是上一个人的需求进度。
+    cs.demands       = [];
+    cs.bulkMet       = false;
+    cs.excludedCount = 0;
+    cs.wantRatio     = 1.0;
     state._counterItems = {};
 
     Core.saveGame(state);
@@ -2187,6 +2250,11 @@
     state.counterState.phase    = 'active';
     state.counterState.offer    = null;
     state.counterState.attitude = 0.9 + Math.random() * 0.2; // 0.9–1.1
+    // 新商旅上台，需求进度重置（缺陷 D13）。
+    state.counterState.demands       = [];
+    state.counterState.bulkMet       = false;
+    state.counterState.excludedCount = 0;
+    state.counterState.wantRatio     = 1.0;
 
     state.todayEvents.push(_makeEvent('npc_activated', npc.name + ' 上柜台',
       '等待出价，需求：' + (npc.wants.length
@@ -3726,6 +3794,12 @@
     if (!Array.isArray(state.counterState.slots)) state.counterState.slots = new Array(32).fill(null);
     if (!Number.isFinite(state.counterState.attitude) || state.counterState.attitude <= 0) state.counterState.attitude = 1.0;
     if (!Number.isFinite(state.counterState.offer)) state.counterState.offer = null;
+    // 需求进度（缺陷 D13）：旧存档没有这个字段，补一个空壳。
+    // 读档后会重新 evaluateCounterOffer 把它重算出来，这里只是保证字段存在。
+    if (!Array.isArray(state.counterState.demands)) state.counterState.demands = [];
+    if (typeof state.counterState.bulkMet !== 'boolean') state.counterState.bulkMet = false;
+    if (!Number.isFinite(state.counterState.excludedCount)) state.counterState.excludedCount = 0;
+    if (!Number.isFinite(state.counterState.wantRatio)) state.counterState.wantRatio = 1.0;
     if (!Number.isFinite(state.gold)) state.gold = 0;
     if (!state.baseState) {
       state.baseState = {

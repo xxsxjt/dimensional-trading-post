@@ -323,10 +323,40 @@
     var info = el('div', {class:'wl-counter-person'});
     info.appendChild(el('b', {}, npc.name || '商旅'));
     info.appendChild(el('span', {}, visitor.name + ' · 预算 ¤' + (npc.budget || 0)));
-    var wants = (npc.wants || []).map(function (w) { return typeConf(w.category || w).label + (w.qty > 1 ? ' ×' + w.qty : ''); }).join(' / ');
-    info.appendChild(el('p', {}, wants ? '想收：' + wants : '没有特别的需求'));
+    /* 需求进度（缺陷 D13）。
+     * 以前这里只画「想收：材料 ×3」，但出价根本不看数量 ——
+     * 玩家看到 ×3，摆 1 件和摆 3 件拿一样的钱。
+     * 现在把柜台上的实际件数标出来：材料 2/4。
+     * 凑齐整单会拿到批发加成，界面也把这件事说出来。 */
+    var demandRows = s.demands || [];
+    if (demandRows.length) {
+      var wantText = demandRows.map(function (row) {
+        var label = typeConf(row.category).label;
+        return label + ' ' + row.filled + '/' + row.need;
+      }).join(' / ');
+      info.appendChild(el('p', {}, '想收：' + wantText));
+      if (s.bulkMet) {
+        info.appendChild(el('p', {class:'wl-counter-hint'}, '整单凑齐，出价含批发加成。'));
+      }
+    } else {
+      var wants = (npc.wants || []).map(function (w) { return typeConf(w.category || w).label + (w.qty > 1 ? ' ×' + w.qty : ''); }).join(' / ');
+      info.appendChild(el('p', {}, wants ? '想收：' + wants : '没有特别的需求'));
+    }
     container.appendChild(info);
     container.appendChild(el('p', {class:'wl-counter-hint'}, '点击仓库货物上柜台，再次点击台面货物可取回。'));
+    /* 他不收的货要看得见。
+     * 缺陷 D13 的另一半：evaluateCounterOffer 一直把「他不收的货有几件」
+     * 记在 cs.excludedCount 上，但**从来没被任何地方读过** ——
+     * 玩家把一箱药放上工地采购的柜台，只看到出价变低，
+     * 却不知道「他不收药」这件事本身。
+     * 现在把它显示出来。 */
+    if (s.excludedCount > 0) {
+      container.appendChild(el('p', {class:'wl-counter-hint'},
+        '有 ' + s.excludedCount + ' 件货他不肯收（' +
+        (npc.excludeCategories || []).map(function (cat) {
+          return typeConf(cat).label;
+        }).join('、') + '），只按两成价清走。'));
+    }
 
     // 他上门时自己也带货：这是前期唯一的进货来源
     var carried = s.offers || [];

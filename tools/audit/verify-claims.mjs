@@ -247,6 +247,7 @@ const TEST_SUITES = [
   ['auction-reserve', 'tests/auction-reserve.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['facility-storage', 'tests/facility-storage-repack.cjs'],
+  ['counter-demand', 'tests/counter-demand.cjs'],
   ['loop', 'tests/loop-rules.cjs'],
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
@@ -310,6 +311,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-reserve.cjs', 10],
   ['tests/facility-purifier-filter.cjs', 20],
   ['tests/facility-storage-repack.cjs', 16],
+  ['tests/counter-demand.cjs', 21],
   ['tests/loop-rules.cjs', 9],
   ['tests/fuzz.cjs', 1],
   ['tests/build-retention.cjs', 1],
@@ -1256,6 +1258,60 @@ ok('D12 仓储扩容回归文件存在',
   existsSync(resolve(root, 'tests/facility-storage-repack.cjs')));
 ok('D12 仓储扩容变异测试文件存在',
   existsSync(resolve(root, 'tests/facility-storage-mutation.cjs')));
+
+/* 6b-14. 缺陷 D13：柜台「需求数量」必须真的进出价公式
+ *
+ * npc.wants 里每条都写着 {category, qty}，界面也照着画「想收：材料 ×3」，
+ * 但旧实现的达成率是这么算的：
+ *
+ *   var satisfiedWants = npc.wants.filter(function (want) {
+ *     return wantedItems.some(function (item) { return item.category === want.category; });
+ *   });
+ *   var wantRatio = npc.wants.length > 0
+ *     ? (satisfiedWants.length / npc.wants.length) : 1.0;
+ *
+ * **want.qty 一个字都没出现** —— 只数「命中了几个类目」。
+ * 于是摆 1 件和摆 3 件拿到的钱完全一样，
+ * 「工地采购」这种 bulk 商旅（每类目要 2~4 件）跟不要批量的一样值钱。
+ *
+ * 修法：达成率按数量算（filled / want.qty，按数量加权），
+ * 整单凑齐额外给批发加成，需求进度落进 counterState.demands 供界面显示。
+ */
+const offerIdx = shopSrc.indexOf('function evaluateCounterOffer');
+ok('D13 柜台出价函数必须存在', offerIdx >= 0,
+  'evaluateCounterOffer 是柜台报价的唯一入口');
+if (offerIdx >= 0) {
+  const offerFn = shopSrc.slice(offerIdx, shopSrc.indexOf('\n  }', offerIdx));
+  ok('D13 出价公式必须读需求数量（want.qty）',
+    /want\.qty/.test(offerFn) && /need\s*=/.test(offerFn),
+    'qty 不被读，就等于「要 3 件」是句废话');
+  ok('D13 达成率必须按数量加权（filled / need）',
+    /filledTotal\s*\/\s*demandTotal/.test(offerFn),
+    '按类目命中条数算的话，1 件和 3 件的达成率都是 100%');
+  ok('D13 不许退回按类目命中条数算达成率',
+    !/var\s+satisfiedWants\s*=/.test(offerFn),
+    'satisfiedWants.length / npc.wants.length 就是那个忽略数量的旧算法');
+  ok('D13 整单凑齐必须给批发加成',
+    /bulkBonus/.test(offerFn) && /bulkBonus\s*>/.test(offerFn),
+    '一次把对方清单凑齐，比零散卖几件值钱');
+  ok('D13 需求进度必须落进 counterState',
+    /cs\.demands\s*=/.test(offerFn) && /cs\.bulkMet\s*=/.test(offerFn),
+    '界面要能画「材料 2/4」，进度就得进状态');
+}
+ok('D13 柜台清空时必须清掉需求进度',
+  /cs\.demands\s*=\s*\[\]/.test(shopSrc),
+  '柜台上没货了，界面上却还挂着「材料 2/4」');
+ok('D13 读档时必须补齐需求进度字段',
+  /counterState\.demands/.test(shopSrc) && /counterState\.wantRatio/.test(shopSrc),
+  '旧存档没有这些字段，读档时补一个空壳');
+const d13UiSrc = src('src/wasteland-ui.js');
+ok('D13 界面必须显示需求进度与「他不收的货」',
+  /demands/.test(d13UiSrc) && /excludedCount/.test(d13UiSrc),
+  'excludedCount 一直只被写、从没被读 —— 玩家看不到「他不收药」这件事');
+ok('D13 柜台需求回归文件存在',
+  existsSync(resolve(root, 'tests/counter-demand.cjs')));
+ok('D13 柜台需求变异测试文件存在',
+  existsSync(resolve(root, 'tests/counter-demand-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——
