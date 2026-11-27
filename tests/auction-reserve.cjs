@@ -135,6 +135,30 @@ function cashText(s) {
   return n ? String(n.textContent || '') : '';
 }
 
+/* 本档奖池能开出的**最高货值**（缺陷 D17 的出价上限）。
+ * 缺陷 D17 之后出价不能超过这个数 ——
+ * 冻结款那几条测试要出的价必须落在这个上限以内，
+ * 否则会被「出价过高」先拒掉，测的就不是冻结款了。 */
+const CEILING_POOL = {
+  low:  ['map_fragment', 'filter_cartridge', 'multitool', 'lockpick_set'],
+  mid:  ['gas_mask', 'whisky_700', 'surgical_kit', 'cigarette_carton'],
+  high: ['morphine', 'cigar_box', 'fake_id', 'explosive', 'pistol']
+};
+function ceilingOf(s, tier) {
+  const Core = s.window.WastelandCore;
+  const market = s.state().market;
+  let best = 0;
+  for (const sku of CEILING_POOL[tier] || CEILING_POOL.low) {
+    if (!Core.ITEM_CATALOG[sku]) continue;
+    for (let q = 2; q <= 5; q++) {
+      const item = Core.createItem(sku, {quality: q, origin: 'auction'});
+      const val = Core.computePrice(market, item);
+      if (val > best) best = val;
+    }
+  }
+  return best;
+}
+
 /* 用**真实 API** 花掉一笔钱：订购是预付、当场扣钱。
  * 供应商面板在基地那侧，得先切过去。
  *
@@ -215,13 +239,25 @@ function dearestOrder(s) {
   const dear = dearestOrder(s);
   assert.ok(dear, 'the supplier panel must offer something to order');
 
-  const purse = 300;
-  /* 冻结额取「余额 - 最贵那单 + 1」：
-   *   可花 = purse - frozen = 最贵那单 - 1 < 最贵那单 */
-  const frozen = Math.max(90, purse - dear.item.unitCost + 1);
-  assert.ok(frozen <= purse, 'the escrow must fit inside the purse');
+  /* 冻结额取「最贵那单 - 1」，余额反过来推成「冻结额 + 最贵那单 - 1」：
+   *   可花 = purse - frozen = 最贵那单 - 1 < 最贵那单
+   *
+   * 余额不能写死成 ¤300 —— 缺陷 D17 之后出价不能超过本档奖池的上限，
+   * 而「最贵那单」的价格是**这一局的行情**决定的，可能超过上限。
+   * 反过来推就能保证 frozen 一定落进上限以内，
+   * 而可花的钱仍然正好卡在「最贵那单 - 1」这条线上。 */
+  const cap = ceilingOf(s, 'low');
+  const frozen = Math.max(90, dear.item.unitCost - 1);
+  const purse = frozen + dear.item.unitCost - 1;
+  assert.ok(frozen <= cap,
+    'the escrow bid (¤' + frozen + ') must fit inside the tier ceiling ¤' + cap);
   assert.ok(purse - frozen < dear.item.unitCost,
     'the dearest lot (¤' + dear.item.unitCost + ') must exceed the spendable ¤' + (purse - frozen));
+  /* 重开一局：余额要一次到位，
+   * 而重载会把界面切回默认视图 —— 拍卖面板必须重新渲染出来。 */
+  s = winningAuction(createSession(undefined, makeRnd(0xB0B)), purse);
+  assert.ok(s.callbacks.auction && s.callbacks.auction.cb,
+    'the auction panel must be reachable on the fresh session');
 
   s.callbacks.auction.cb.onBid(frozen);
   assert.equal(s.state().auction.currentLeader, 'player', 'the player must be leading');
@@ -250,8 +286,6 @@ function dearestOrder(s) {
    * 柜台报价受市价约束（约市价的 80%~100%），
    * 所以要用**市价最高的那件货**来构造越界。 */
   let s = winningAuction(createSession(undefined, makeRnd(0x5EED)), 3000);
-  /* 冻结 ¤100，只留 ¤63 可花（跟订购那条对齐），
-   * 再让柜台卖一件超过 ¤63 的货。 */
   const carriers = s.state().todayNPCs.filter(n => (n.offers || []).length);
   assert.ok(carriers.length, 'some visitor must carry goods');
 
@@ -262,10 +296,21 @@ function dearestOrder(s) {
   }));
   assert.ok(best, 'a visitor must carry something');
 
-  /* 冻结额：余额 - 可花额度刚好等于「最贵那单 - 1」 */
-  const purse = 3000;
-  const frozen = Math.max(90, purse - (best.unitCost - 1));
-  assert.ok(frozen <= purse, 'the escrow must fit inside the purse');
+  /* 冻结额固定取最小出价（¤90），余额反过来推成「冻结额 + 最贵那单 - 1」：
+   *   可花 = purse - frozen = 最贵那单 - 1 < 最贵那单
+   *
+   * 冻结额不能随意加大 —— 缺陷 D17 之后出价不能超过本档奖池的上限，
+   * 冻结额就是出价，超了会被「出价过高」先拒掉。 */
+  const purse = 90 + best.unitCost - 1;
+  const frozen = 90;
+  const cap = ceilingOf(s, 'low');
+  assert.ok(frozen <= cap,
+    'the escrow bid (¤' + frozen + ') must fit inside the tier ceiling ¤' + cap);
+  assert.ok(purse - frozen < best.unitCost,
+    'the dearest lot (¤' + best.unitCost + ') must exceed the spendable ¤' + (purse - frozen));
+  /* 只改余额，不换 session —— 换了 session 商旅就换了，
+   * 上面挑中的 bestNpc 会指向一个不存在的人。 */
+  s = rewrite(s, live => { live.gold = purse; });
 
   s.callbacks.auction.cb.onBid(frozen);
   assert.equal(s.state().auction.currentLeader, 'player', 'the player must be leading');

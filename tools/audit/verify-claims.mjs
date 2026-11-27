@@ -247,6 +247,7 @@ const TEST_SUITES = [
   ['auction', 'tests/auction-rules.cjs'],
   ['auction-week', 'tests/auction-week.cjs'],
   ['auction-reserve', 'tests/auction-reserve.cjs'],
+  ['auction-ceiling', 'tests/auction-prize-ceiling.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['facility-storage', 'tests/facility-storage-repack.cjs'],
   ['counter-demand', 'tests/counter-demand.cjs'],
@@ -315,6 +316,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-rules.cjs', 6],
   ['tests/auction-week.cjs', 10],
   ['tests/auction-reserve.cjs', 10],
+  ['tests/auction-prize-ceiling.cjs', 11],
   ['tests/facility-purifier-filter.cjs', 20],
   ['tests/facility-storage-repack.cjs', 16],
   ['tests/counter-demand.cjs', 21],
@@ -342,6 +344,8 @@ ok('拍卖整周回归文件存在', existsSync(resolve(root, 'tests/auction-wee
 ok('拍卖整周变异测试文件存在', existsSync(resolve(root, 'tests/auction-week-mutation.cjs')));
 ok('拍卖冻结款回归文件存在', existsSync(resolve(root, 'tests/auction-reserve.cjs')));
 ok('拍卖冻结款变异测试文件存在', existsSync(resolve(root, 'tests/auction-reserve-mutation.cjs')));
+ok('拍卖出价上限回归文件存在', existsSync(resolve(root, 'tests/auction-prize-ceiling.cjs')));
+ok('拍卖出价上限变异测试文件存在', existsSync(resolve(root, 'tests/auction-prize-ceiling-mutation.cjs')));
 ok('设施滤芯回归文件存在', existsSync(resolve(root, 'tests/facility-purifier-filter.cjs')));
 ok('设施滤芯变异测试文件存在', existsSync(resolve(root, 'tests/facility-purifier-mutation.cjs')));
 ok('基础玩法回归文件存在', existsSync(resolve(root, 'tests/loop-rules.cjs')));
@@ -1465,6 +1469,70 @@ ok('D16 断供结束时基线必须从基线表兜底',
 ok('D16 断供必须记住自己的基线',
   /stockoutBaselines/.test(d14CoreSrc) && /so2\[cat\]\s*=\s*b0/.test(d14CoreSrc),
   '断供不记基线，到期就还原不回去');
+
+/* 6b-18. 缺陷 D17：拍卖出价必须封顶在奖池能兑付的高度
+ *
+ * 货池有限，价格无界 —— 奖池里就那十几种货、品质封顶 5，
+ * 所以每一档能开出的**最高货值是确定的**。
+ * 而 playerBid 以前只查「是不是整数」「够不够起拍」「够不够余额」，
+ * 没有任何一处把出价跟「这一档能开出什么」联系起来。
+ *
+ * 结果：玩家出 ¤540 拍下只值 ¤180 的货（low 档），
+ * 出 ¤3200 拍下只值 ¤960 的货（high 档）——
+ * 三分之二到七成的钱凭空蒸发，而且亏的比例没有上限。
+ *
+ * _buildAuctionPrize 的注释明明写着
+ * 「但仍保证拿到的货价值不低于成交价的一定比例」，
+ * 那句承诺从来没实现：fallback 分支是 `if (best) return best;`，零比例检查。
+ *
+ * 修法四件套：
+ *   一、_auctionPrizeCeiling 算出本档奖池的最高货值；
+ *   二、playerBid 拒掉超过上限的出价；
+ *   三、_npcAuctionBid 不许把价抬到上限以上；
+ *   四、结算时按货的实际价值封顶收费（拿到的货 ≥ 付的钱）。
+ */
+const d17ShopSrc = shopSrc;
+const d17UiSrc = src('src/wasteland-ui.js');
+ok('D17 必须能算出本档奖池的价值上限',
+  /function\s+_auctionPrizeCeiling/.test(d17ShopSrc),
+  '没有上限，出价就能高到奖池根本兑付不起');
+ok('D17 上限必须跟配货走同一批货与同一个定价函数',
+  /function\s+_auctionPrizeCeiling[\s\S]{0,900}?Core\.createItem/.test(d17ShopSrc) &&
+  /function\s+_auctionPrizeCeiling[\s\S]{0,900}?Core\.computePrice/.test(d17ShopSrc),
+  '上限算一套、配货算另一套，界面上的上限就是假的');
+ok('D17 必须有出价上限这个概念',
+  /function\s+_auctionBidCap/.test(d17ShopSrc) &&
+  /_auctionBidCap\s*\(\s*auc\s*\)/.test(d17ShopSrc),
+  '上限没接到拍卖状态上，等于没写');
+ok('D17 出价必须被上限挡住',
+  /bid\s*>\s*bidCap/.test(d17ShopSrc),
+  '出价没有天花板，货池有限而价格无界');
+ok('D17 上限不能低于起拍价（玩家连第一口价都出不出来）',
+  /function\s+_auctionBidCap[\s\S]{0,400}?Math\.max\(\s*ceiling\s*,\s*base\s*\)/.test(d17ShopSrc),
+  '行情崩了就把上限压到起拍价以下 = 拍卖变成死局');
+ok('D17 被拒的出价必须照样推进回合',
+  /出价过高[\s\S]{0,400}?_advanceAuctionRound/.test(d17ShopSrc),
+  '拒掉但不推进 = 玩家点一次就把拍卖卡死在这一轮');
+ok('D17 NPC 抬价也不得越过上限',
+  /function\s+_npcAuctionBid[\s\S]{0,1200}?if\s*\(\s*next\s*>\s*cap\s*\)\s*return/.test(d17ShopSrc),
+  'NPC 能把价抬到兑付不起的高度，玩家跟也不是、不跟也不是');
+ok('D17 结算必须按货值封顶收费（拿到的货 ≥ 付的钱）',
+  /var\s+charge\s*=\s*Math\.min\(\s*auc\.currentBid\s*,\s*prizeValue\s*\)/.test(d17ShopSrc),
+  '出价上限只管「现在」，管不到结算那天行情跌了的账');
+ok('D17 上限必须传给界面',
+  /bidCap:\s*_auctionBidCap\(\s*auc\s*\)/.test(d17ShopSrc),
+  '上限算出来了但不告诉界面，玩家照样一头撞上去');
+ok('D17 界面必须把上限写出来',
+  /var\s+bidCap\s*=\s*Number\(s\.bidCap\)/.test(d17UiSrc) &&
+  /上限/.test(d17UiSrc),
+  '行为对了但玩家不知道，实质上仍然是坏体验');
+ok('D17 出价输入框必须钉住 max',
+  /bidAttrs\.max\s*=\s*String\(bidCap\)/.test(d17UiSrc),
+  '浏览器本身先拦一道，商店那侧再拦一道');
+ok('D17 拍卖上限回归文件存在',
+  existsSync(resolve(root, 'tests/auction-prize-ceiling.cjs')));
+ok('D17 拍卖上限变异测试文件存在',
+  existsSync(resolve(root, 'tests/auction-prize-ceiling-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

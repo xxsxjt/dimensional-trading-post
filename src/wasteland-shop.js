@@ -2930,6 +2930,27 @@
       Core.saveGame(state);
       render(); return;
     }
+    /* 缺陷 D17：出价必须封顶在这一档奖池的**最高货值**以内。
+     *
+     * 奖池里的货就那十几种、品质封顶 5，所以这一档能开出的最高货值是**确定的**。
+     * 玩家却能出到任意高 —— 超出部分根本没有对应的货来兑付：
+     *   low  档奖池最高 ¤180，出价 ¤540 → 照收 ¤540，拿回 ¤180 的货；
+     *   high 档奖池最高 ¤1600，出价 ¤3200 → 照收 ¤3200，拿回 ¤960 的货。
+     * 也就是说：出价越高，亏得越狠，而且亏的比例没有上限。
+     *
+     * 这里把出价拦在上限之外，当场拒掉并说明原因。
+     * 拒掉之后照样推进回合 —— 与其它出价失败一致，
+     * 否则玩家点一次就足以让拍卖卡死在这一轮。
+     */
+    var bidCap = _auctionBidCap(auc);
+    if (bid > bidCap) {
+      state.todayEvents.push(_makeEvent('bid_fail', '出价过高',
+        '这一档奖池里最贵的货只值 ¤' + bidCap + '，出价 ¤' + bid + ' 没有对应的货，' +
+        '上限 ¤' + bidCap + '。'));
+      _advanceAuctionRound();
+      Core.saveGame(state);
+      render(); return;
+    }
     auc.currentBid    = bid;
     auc.currentLeader = 'player';
     /* 出价即承担成交价的义务 —— 冻结额由 currentLeader/currentBid 推导，
@@ -2952,10 +2973,23 @@
   function _npcAuctionBid() {
     var auc = state.auction;
     if (!auc || auc.done) return;
+    /* 缺陷 D17：NPC 抬价也必须封顶在奖池最高货值以内。
+     *
+     * 以前 NPC 无脑加 minIncrement，可以把价抬到奖池根本兑付不起的高度。
+     * 这不只是「NPC 太凶」—— NPC 抬到上限以上时，
+     * 玩家的钱会被一个**不可能兑现的价**顶掉：
+     * 玩家被迫跟价，跟了就亏七成，不跟就落拍。
+     * 两条路都是玩家吃亏，而这一档的货根本不值那个价。
+     *
+     * 封顶之后，NPC 能抬到的最高价仍低于奖池上限，
+     * 玩家跟价永远有货可兑 —— 竞拍才回到「博弈」而不是「罚站」。 */
+    var cap = _auctionBidCap(auc);
     auc.competitors.forEach(function (npc) {
       var aiMax = NPC.negotiatePrice(npc, { basePrice: auc.basePrice, auctionBid: true }, auc.basePrice);
       if (typeof aiMax === 'number' && aiMax > auc.currentBid && Math.random() > 0.45) {
-        auc.currentBid    = auc.currentBid + auc.minIncrement;
+        var next = auc.currentBid + auc.minIncrement;
+        if (next > cap) return;
+        auc.currentBid    = next;
         auc.currentLeader = npc.name;
       }
     });
@@ -3126,6 +3160,24 @@
       // 挑不到够格的（奖池整体偏便宜）就退而求其次挑最贵的，
       // 但仍保证拿到的货价值不低于成交价的一定比例。
       var prize = _buildAuctionPrize(sku, auc.currentBid, auc.tier);
+      /* 缺陷 D17：结算时按**货的实际价值**封顶收费。
+       *
+       * 出价上限挡住了「现在」就出荒谬的价，
+       * 但结算可能发生在好几天之后 —— 这期间行情会变。
+       * 玩家出价 ¤500 时这档的货值 ¤500，
+       * 结算时行情崩了，货只值 ¤300：
+       *   照收 ¤500 → 玩家为一个只值 ¤300 的货付了五成溢价，
+       *   而这正是当初那段注释承诺过「不能发生」的事：
+       *     「拿到的货，市场价值不得低于成交价」。
+       *
+       * 契约（现在真的成立）：
+       *   扣的钱 = min(成交价, 货的当前市场价值)
+       * 于是「拿到的货 ≥ 付的钱」永远为真。
+       * 正常情况下两者相等（扣的就是成交价），
+       * 只有行情在这期间跌了才会少扣 —— 那是货真的不值那个价了。
+       */
+      var prizeValue = Core.computePrice(state.market, prize);
+      var charge = Math.min(auc.currentBid, prizeValue);
       // 入库要扫**整个**仓库，不能只扫一部分格子。
       //
       // 以前这里写死了 `for (ar = 0; ar < 6) for (ac = 0; ac < 8)`，
@@ -3136,9 +3188,13 @@
       var placed = _placeInWarehouse(prize);
       if (placed) {
         // 先入库，再扣钱。顺序反过来的话，玩家会「付了钱货却没了」。
-        state.gold -= auc.currentBid;
+        state.gold -= charge;
         state.todayEvents.push(_makeEvent('auction_won', '拍卖成功',
-          '花费 ¤' + auc.currentBid + ' 拍得维度货箱，货物已入库。'));
+          '花费 ¤' + charge + ' 拍得维度货箱，货物已入库。' +
+          (charge < auc.currentBid
+            ? '（成交时行情下跌，货只值 ¤' + prizeValue + '，多收的 ¤' +
+              (auc.currentBid - charge) + ' 已退回。）'
+            : '')));
       } else {
         // 仓库放不下 —— **不扣钱**。
         // 以前是先扣钱再入库，货没了钱也没了：玩家白白损失 ¤500，
@@ -3170,6 +3226,63 @@
    * 市场价格一律走 Core.computePrice —— 与界面显示、库存估值
    * 用的是同一个函数，不会出现「界面说值多少、实际算另一个数」。
    */
+  /* 本档奖池的**价值上限**：这一档里最贵的那件货能值多少。
+   *
+   * 缺陷 D17：出价没有天花板。
+   *   low  档奖池最高只值 ¤180（品质 5 的 lockpick_set），
+   *   但玩家可以出到 ¤540；拍卖照收，钱照扣，
+   *   拿回来的货却只值 ¤180 —— 三分之二的钱凭空蒸发。
+   *   high 档同理：出 ¤3200，货值 ¤960。
+   *
+   * 根因是「货池有限，但价格无界」：
+   *   奖池里的货就那十几种，品质封顶 5，
+   *   所以这一档能开出的**最高货值是确定的**，
+   *   玩家却可以出到任意高 —— 超出部分没有对应的货来兑付。
+   *
+   * 修法：用奖池的实际最高货值给这一档的出价设上限。
+   * 出到上限以上 = 出一个「奖池里根本没有对应价值」的价，
+   * 这种出价必须当场被拒，而不是收下钱再给一件便宜的货。
+   *
+   * 计算方式与配货完全一致（同一批 sku、品质 2~5、同一个
+   * Core.computePrice），所以「显示的上限」和「真能开出的最高货值」
+   * 不会对不上。
+   */
+  function _auctionPrizeCeiling(tier) {
+    var pool = AUCTION_POOL[tier] || AUCTION_POOL.low;
+    var market = state.market;
+    var best = 0;
+    for (var pi = 0; pi < pool.length; pi++) {
+      var sku = pool[pi];
+      if (!Core.ITEM_CATALOG[sku]) continue;
+      for (var q = 2; q <= 5; q++) {
+        var item;
+        try { item = Core.createItem(sku, { quality: q, origin: 'auction' }); }
+        catch (e) { continue; }
+        var val = Core.computePrice(market, item);
+        if (val > best) best = val;
+      }
+    }
+    return best;
+  }
+
+  /* 本档的**出价上限**。
+   *
+   * 取「奖池最高货值」和「起拍价」两者的较大者：
+   * 行情崩到奖池整体不值起拍价时（品类系数被压到很低），
+   * 上限不能低于起拍价 —— 否则玩家连第一口价都出不出来，
+   * 拍卖直接变成谁都不能玩的死局。
+   *
+   * 注意这跟结算时的「按货值封顶」是两件事：
+   *   上限 —— 拦住玩家**现在**就出荒谬的价；
+   *   封顶 —— 保证**结算时**即使行情已经跌了，也不会多收钱。
+   */
+  function _auctionBidCap(auc) {
+    if (!auc) return 0;
+    var ceiling = _auctionPrizeCeiling(auc.tier);
+    var base = Number(auc.basePrice) || 0;
+    return Math.max(ceiling, base);
+  }
+
   function _buildAuctionPrize(fallbackSku, paid, tier) {
     var pool = AUCTION_POOL[tier] || AUCTION_POOL.low;
     var market = state.market;
@@ -3637,7 +3750,9 @@
           currentBid: auc.currentBid, currentBidder: auc.currentLeader || '—',
           minIncrement: auc.minIncrement, round: auc.round, maxRound: auc.maxRounds, ended: false,
           /* 玩家领先时那笔成交价是冻结的，要告诉玩家他能花多少。 */
-          escrow: _escrowHeld()
+          escrow: _escrowHeld(),
+          /* 缺陷 D17：本档出价上限（奖池最高货值）—— 界面必须写出来。 */
+          bidCap: _auctionBidCap(auc)
         }, { onBid: playerBid });
       } else if (auc && auc.done) {
         if (aucWrap) aucWrap.style.display = '';

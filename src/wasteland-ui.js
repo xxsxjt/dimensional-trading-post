@@ -1194,6 +1194,21 @@
       }, '¤' + Number(s.escrow).toLocaleString() + ' 已冻结给本次拍卖，落拍原样退回。'));
     }
 
+    /* 缺陷 D17：本档的**出价上限**必须写出来。
+     *
+     * 奖池里能开出的货值有上限（这一档最贵的货就值那么多），
+     * 出价却可以更高 —— 收下钱再给一件便宜的货。
+     * 玩家看不见这个上限，就只能靠事后才知道自己亏了。
+     *
+     * 所以上限既写在界面上，也钉在输入框的 max 上：
+     * 浏览器本身就会拦一道，商店那侧再拦一道（防手改/防绕过）。 */
+    var bidCap = Number(s.bidCap) || 0;
+    if (bidCap > 0) {
+      container.appendChild(el('p', {
+        style: 'margin:6px 0 0;font-size:12px;color:' + AMBER + ';',
+      }, '本档上限 ¤' + bidCap.toLocaleString() + '（奖池里最贵的货就值这个价）'));
+    }
+
     if (s.ended) {
       container.appendChild(el('b', {
         style: 'color:' + (s.won ? PHOSPHOR : '#ff7e8e') + ';font-size:13px;',
@@ -1201,14 +1216,20 @@
     } else {
       var minBid = (s.currentBid || 0) + (s.minIncrement || 1);
       var bidRow = el('div', { style: 'display:flex;gap:6px;align-items:center;' });
-      var bidInput = el('input', {
+      /* max 只在「上限 ≥ 最低出价」时才写上去。
+       * 上限低于最低出价时写 max 会造出 min > max 的非法输入框，
+       * 浏览器会直接把这一栏判为无效 —— 那还不如不写，
+       * 让玩家照常出价、由商店那侧去挡。 */
+      var bidAttrs = {
         type: 'number',
         min: String(minBid),
         step: String(s.minIncrement || 1),
         value: s.myBid != null ? String(s.myBid) : String(minBid),
         'aria-label': '竞拍出价',
         style: 'flex:1;min-width:0;min-height:44px;padding:8px;border:1px solid ' + AMBER + ';background:' + GRID_BG + ';color:' + AMBER + ';font-family:inherit;font-size:12px;',
-      });
+      };
+      if (bidCap > 0 && bidCap >= minBid) bidAttrs.max = String(bidCap);
+      var bidInput = el('input', bidAttrs);
       bidRow.appendChild(bidInput);
       var bidBtn = el('button', {
         type: 'button',
