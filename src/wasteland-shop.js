@@ -3444,6 +3444,23 @@
       var evType = (typeof ev === 'object' && ev.type === 'market') ? 'market' : 'system';
       state.todayEvents.push(_makeEvent(evType, evType === 'market' ? '行情通知' : '系统消息', text));
     });
+    /* 3a. 保质期临期提醒 —— 缺陷 D23
+     *
+     * Core.advanceDay 会把「还有 N 天保质期」放进 result.warnings，
+     * 但这段代码只遍历了 result.events —— warnings 被整包丢掉。
+     *
+     * 结果：core 明明算出了临期告警，玩家却**永远看不到**。
+     * 一盒抗生素只剩两天过期，仓库面板上不显示、事件流里不提示，
+     * 玩家只能等它默默消失。
+     *
+     * 过期事件（result.events 里的「已过期并移除」）是有的 ——
+     * 因为它走的是 events 通道。丢的只有 warnings 这一路。
+     *
+     * 修法：把 warnings 也接进事件流。 */
+    (result.warnings || []).forEach(function (text) {
+      if (!text) return;
+      state.todayEvents.push(_makeEvent('expiry_warn', '保质期告警', String(text)));
+    });
     // 3b. 周结算（day%7===1 且非第1天）
     //
     // 这一步必须在下面「拍卖每日推进一拍」**之前**：

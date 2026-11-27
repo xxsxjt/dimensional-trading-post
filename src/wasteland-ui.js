@@ -797,11 +797,38 @@
       info.appendChild(el('b', { style: 'display:block;font-size:12px;color:' + PHOSPHOR + ';' },
         esc((loot.brand ? loot.brand + ' ' : '') + (loot.name || conf.label))));
       var sub = conf.label + (loot.qty > 1 ? ' ×' + loot.qty : '');
-      /* 品牌溢价一并标出来：品牌货转手更值钱，这是订它的理由。 */
-      if (loot.brand && loot.brandPremium > 1) {
-        sub += ' · 品牌 +' + Math.round((loot.brandPremium - 1) * 100) + '%';
+      /* 品牌溢价一并标出来：品牌货转手更值钱，这是订它的理由。
+       *
+       * 溢价倍率这里现算，不读 loot.brandPremium ——
+       * 待领区传进来的是**原始 item**，不是 shop 侧 adaptItem 加工过的副本，
+       * 原始 item 上没有 brandPremium 字段（它是 adaptItem 加的）。
+       * 上一轮 D19 改的时候只顾着详情面板，
+       * 待领区这一处就一直读着一个永远 undefined 的字段 ——
+       * 品牌名看得见，溢价百分比永远不显示。 */
+      var brandMult = 1;
+      var coreRef = window.WastelandCore;
+      if (loot.brand && coreRef && coreRef.brandMultiplier) {
+        brandMult = coreRef.brandMultiplier(loot);
       }
-      info.appendChild(el('span', { style: 'font-size:10px;color:' + MUTED + ';' }, sub));
+      if (loot.brand && brandMult > 1) {
+        sub += ' · 品牌 +' + Math.round((brandMult - 1) * 100) + '%';
+      }
+      /* 缺陷 D22：待领区不再是无视保质期的安全区。
+       * 货在这儿躺着照样一天天过期，所以剩余保质期必须**看得见** ——
+       * 玩家得知道哪件该先领、哪件干脆别领了。
+       * 剩 3 天以内的用告警色标出来。 */
+      if (loot.expiry != null) {
+        var expDays = Math.max(0, Math.round(loot.expiry));
+        sub += ' · 保质期 ' + expDays + ' 天';
+        if (expDays <= 3) sub += '（快过期）';
+      }
+      /* 陈年酒的陈年天数同样会走 —— 放着不动也是白放着。 */
+      if (loot.agedDays != null && loot.agedDays > 0) {
+        sub += ' · 陈年 ' + loot.agedDays + ' 天';
+      }
+      info.appendChild(el('span', {
+        style: 'font-size:10px;color:' + (loot.expiry != null && loot.expiry <= 3 ? '#e8a33d' : MUTED) + ';'
+      }, sub));
       row.appendChild(info);
       if (qLvl) {
         var dotWrap = el('span', { style: 'display:flex;gap:2px;align-items:center;' });

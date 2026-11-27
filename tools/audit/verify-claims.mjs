@@ -249,6 +249,7 @@ const TEST_SUITES = [
   ['auction-reserve', 'tests/auction-reserve.cjs'],
   ['auction-ceiling', 'tests/auction-prize-ceiling.cjs'],
   ['order-contract', 'tests/order-contract.cjs'],
+  ['loot-expiry-contract', 'tests/loot-expiry-contract.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['facility-storage', 'tests/facility-storage-repack.cjs'],
   ['counter-demand', 'tests/counter-demand.cjs'],
@@ -318,6 +319,8 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-week.cjs', 10],
   ['tests/auction-reserve.cjs', 10],
   ['tests/auction-prize-ceiling.cjs', 11],
+  ['tests/order-contract.cjs', 13],
+  ['tests/loot-expiry-contract.cjs', 10],
   ['tests/facility-purifier-filter.cjs', 20],
   ['tests/facility-storage-repack.cjs', 16],
   ['tests/counter-demand.cjs', 21],
@@ -1636,6 +1639,76 @@ ok('D21 订单回归文件存在',
   existsSync(resolve(root, 'tests/order-contract.cjs')));
 ok('D21 订单变异测试文件存在',
   existsSync(resolve(root, 'tests/order-contract-mutation.cjs')));
+
+/* ── 6b3. 待领区结算契约（缺陷 D22 / D23） ──────────────────────
+ *
+ * 待领区（state.returnedLoot）是仓库之外的第三种存放形态。
+ * 它跟仓库/柜台不一样的地方在于：**它不在任何一趟每日结算里**。
+ *
+ *   D22 待领区是免检仓库（expiry 冻结、agedDays 停涨）
+ *   D23 临期告警被整包丢掉（core 算了，商店没接）
+ */
+const d22CoreSrc = core;
+const d22ShopSrc = shopSrc;
+const d22UiSrc = ui;
+
+ok('D22 核心里必须有对待领区的结算',
+  /var\s+waiting\s*=\s*state\.returnedLoot/.test(d22CoreSrc),
+  '待领区不在 advanceDay 的结算范围里 = 免检仓库');
+ok('D22 待领区的结算必须真的落到 returnedLoot 上',
+  /state\.returnedLoot\s*=\s*keptWaiting/.test(d22CoreSrc),
+  '算完不写回 = 保质期照减但不生效');
+ok('D22 待领区必须递减保质期',
+  /var\s+waiting[\s\S]{0,1400}?item\.expiry--/.test(d22CoreSrc),
+  'expiry 不减 = 药和种子在待领区里永远不过期');
+ok('D22 待领区必须推进陈年天数',
+  /var\s+waiting[\s\S]{0,1400}?item\.agedDays\+\+/.test(d22CoreSrc),
+  'agedDays 不涨 = 陈年酒在待领区里停止积累 collector 溢价');
+ok('D22 待领区过期的货必须被清走',
+  /var\s+waiting[\s\S]{0,1600}?已过期并被清走/.test(d22CoreSrc),
+  '过期的货继续躺在待领区 = 免检仓库还在');
+ok('D22 待领区结算必须排在派遣归来之前',
+  (() => {
+    const w = d22CoreSrc.indexOf('var waiting=state.returnedLoot');
+    const d = d22CoreSrc.indexOf('state.dispatches.forEach');
+    if (w < 0 || d < 0) return false;
+    return w < d;
+  })(),
+  '排在派遣归来之后 = 当天刚带回的货会被误判为过期一天');
+ok('D22 界面必须显示待领区货物的剩余保质期',
+  /loot\.expiry\s*!=\s*null[\s\S]{0,300}?保质期/.test(d22UiSrc),
+  '待领区不再是安全区，剩余保质期必须看得见');
+ok('D22 界面必须显示待领区货物的陈年天数',
+  /loot\.agedDays\s*!=\s*null[\s\S]{0,300}?陈年/.test(d22UiSrc),
+  '陈年天数在涨，玩家得看得见');
+ok('D22 待领区回归文件存在',
+  existsSync(resolve(root, 'tests/loot-expiry-contract.cjs')));
+ok('D22 待领区变异测试文件存在',
+  existsSync(resolve(root, 'tests/loot-expiry-contract-mutation.cjs')));
+
+ok('D23 临期告警必须接进事件流',
+  /result\.warnings[\s\S]{0,300}?_makeEvent\('expiry_warn'/.test(d22ShopSrc),
+  'core 算出了 warnings，商店没接 = 玩家永远看不到临期告警');
+ok('D23 临期告警必须有可辨识的事件类型',
+  /'expiry_warn'/.test(d22ShopSrc),
+  '混在「系统消息」里玩家分不清这是要紧事');
+
+/* 6b4. 待领区品牌溢价显示（D19 的尾巴） ──────────────────────
+ *
+ * 待领区传进来的是**原始 item**，不是商店侧 adaptItem 加工过的副本，
+ * 而 brandPremium 恰恰是 adaptItem 加上去的字段。
+ * 所以直接读 loot.brandPremium 永远是 undefined ——
+ * 品牌名看得见，溢价百分比永远不显示。
+ * 界面必须绕开适配层，直接查 Core.brandMultiplier。 */
+ok('D19 待领区界面必须查 Core.brandMultiplier',
+  /brandMult[\s\S]{0,300}?brandMultiplier/.test(d22UiSrc),
+  '待领区不查倍率 = 品牌溢价永远显示不出来');
+ok('D19 待领区界面不能直接读 loot.brandPremium',
+  !/loot\.brandPremium/.test(d22UiSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+  '原始 item 上没有 brandPremium = 读到 undefined');
+ok('D19 待领区界面不能引用未定义的 Core 标识符',
+  !/(^|[^.\w])Core\s*\./.test(d22UiSrc),
+  'Core 不是全局量 = ReferenceError 崩掉整个界面');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

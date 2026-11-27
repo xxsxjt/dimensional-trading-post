@@ -1054,6 +1054,57 @@
       });
     }
 
+    /* 待领区（returnedLoot）同样要结算保质期与陈年。 —— 缺陷 D22
+     *
+     * 待领区是仓库之外的第三种存放形态：派遣带回的战利品、
+     * 订购到货仓库放不下的货、仓储缩减挤出来的货，都堆在这儿。
+     *
+     * 以前 advanceDay 只结算 grid.items 与 _counterItems ——
+     * 待领区不在任何一趟遍历里。于是：
+     *   · 带保质期的货（止痛药 365 天、 antidote 180 天、灵茶 540 天…）
+     *     在待领区里躺着，expiry 一天都不减 —— 永远是「新鲜」的；
+     *   · 陈年酒在待领区里 agedDays 不涨 —— collector 溢价永远拿不到；
+     *   · 玩家把过期面包往待领区一塞，它就在那儿免检躺到天荒地老。
+     *
+     * 也就是说：待领区 = 免检仓库。玩家只要把货塞进去不过期，
+     * 就能把短保质期的品（新鲜蔬菜 3 天、发芽土豆 5 天、面包 5 天）
+     * 无限期地当新品卖。
+     *
+     * 而且这里有个更隐蔽的坑：expiry 是 createItem 时按**当前天**快照的，
+     * 不会补算等待的那些天。所以「在待领区躺 40 天再领回来」的货，
+     * 保质期还是原值 —— 它在待领区的那些天被彻底跳过了。
+     *
+     * 修法：待领区与仓库走**同一套**结算逻辑。
+     * 到期的直接清走（不塞回仓库 —— 仓库满时会丢货），
+     * 临期的进 warnings。
+     *
+     * 顺序说明：待领区必须在派遣归来之前结算。
+     * 派遣带回来的战利品是**今天**才生成的，
+     * 它不该在生成当天就被判过期 —— 药品过期是 180 天后的事。
+     * 但 core.advanceDay 里「派遣归来」这一步在函数末尾，
+     * 而这里的待领区结算在它之前，于是当天新带回的货不在这一趟里，
+     * 下一趟结算时它的 expiry 才第一次递减 —— 正确的。 */
+    var waiting=state.returnedLoot;
+    if(Array.isArray(waiting)&&waiting.length){
+      var keptWaiting=[];
+      waiting.forEach(function(item){
+        if(!item)return;
+        if(item.agedDays!=null)item.agedDays++;
+        if(item.expiry==null){keptWaiting.push(item);return;}
+        item.expiry--;
+        if(item.expiry<=0){
+          result.expired.push(item.id);
+          result.events.push('待领区的「'+item.name+'」已过期并被清走。');
+        }else if(item.expiry<=3){
+          result.warnings.push('待领区的「'+item.name+'」还有 '+item.expiry+' 天保质期。');
+          keptWaiting.push(item);
+        }else{
+          keptWaiting.push(item);
+        }
+      });
+      state.returnedLoot=keptWaiting;
+    }
+
     var market=state.market;
     if(market){
       market.day=state.day;

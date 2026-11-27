@@ -335,6 +335,74 @@ if (expiryItems > 0 && !counterExpiryGuard)
     '柜台上的商品（_counterItems）从不结算保质期 —— 放进柜台的药品/种子/食品可无限期存放并照常成交；' +
     'Core.advanceDay 只遍历 state.grid.items');
 
+// 待领区（returnedLoot）是否参与过期结算？
+//
+// 待领区是仓库之外的第三种存放形态：派遣带回来的战利品、
+// 订购到货仓库放不下的货、仓储缩减挤出来的货，都堆在这儿。
+// 它跟仓库/柜台一样都是「玩家持有的货」，该走同一套结算。
+// 如果它不在 advanceDay 的遍历里，待领区就成了免检仓库 ——
+// 药和种子在里面躺着永远不过期，短保质期的品进去就再也不腐坏。
+//
+// 判据：advanceDay 里必须有一段同时读 returnedLoot 且谈 expiry。
+const waitingExpiryGuard = (() => {
+  const hay = coreCode;
+  const re = /returnedLoot/g;
+  let m;
+  while ((m = re.exec(hay))) {
+    const win = hay.slice(Math.max(0, m.index - 400), m.index + 700);
+    if (/expir/i.test(win)) return true;
+  }
+  return false;
+})();
+console.log('[expiry] 待领区过期结算 ' + (waitingExpiryGuard ? '有' : '无'));
+if (expiryItems > 0 && !waitingExpiryGuard)
+  add('error', 'expiry',
+    '待领区（returnedLoot）从不结算保质期 —— 派遣带回的药品、订购积压的食品放进去就永远不过期；' +
+    'Core.advanceDay 只遍历 state.grid.items 与 state._counterItems');
+
+// 待领区的过期清理必须真的把货清走，而不是留在原地。
+const waitingExpiryCleared = /returnedLoot\s*=\s*keptWaiting/.test(coreCode);
+if (expiryItems > 0 && !waitingExpiryCleared)
+  add('error', 'expiry',
+    '待领区算完了保质期却不写回 state.returnedLoot —— 保质期照减但不生效，等于没结算');
+
+// Core.advanceDay 返回的 warnings 有没有人接？
+//
+// advanceDay 把「还有 N 天保质期」放进 result.warnings。
+// 商店的 endDay 如果只遍历 result.events，warnings 就被整包丢掉 ——
+// core 算出了告警，玩家永远看不到。
+// 过期本身走 events 通道（它有事件），丢的只有告警这一路。
+const warningsConsumed = /result\.warnings/.test(shopCode);
+console.log('[expiry] 临期告警接进事件流 ' + (warningsConsumed ? '有' : '无'));
+if (expiryItems > 0 && !warningsConsumed)
+  add('error', 'expiry',
+    'Core.advanceDay 算出的 result.warnings 从来没人接 —— 商店只遍历 result.events，' +
+    '「还有 N 天保质期」的临期告警玩家永远看不到，只能等货默默消失');
+
+/* ── 11b. 待领区品牌溢价（缺陷 D19 的尾巴） ──────────────────────
+ *
+ * 待领区传进来的是**原始 item**，不是商店侧 adaptItem 加工过的副本。
+ * 而 brandPremium 恰恰是 adaptItem 加上去的字段 ——
+ * 原始 item 上只有 brand 品牌名，没有 brandPremium。
+ * 所以待领区那行界面直接读 loot.brandPremium 永远是 undefined，
+ * 品牌名看得见、溢价百分比永远不显示。
+ * 界面必须绕开适配层，直接查 Core.brandMultiplier。
+ */
+const uiBrandMultGuard = /brandMult[\s\S]{0,300}?brandMultiplier/.test(uiCode);
+console.log('[brand] 待领区查品牌倍率 ' + (uiBrandMultGuard ? '有' : '无'));
+if (!uiBrandMultGuard)
+  add('error', 'ui',
+    '待领区界面不查品牌倍率 —— 原始 item 上没有 brandPremium 字段，' +
+    '直接读会拿到 undefined，品牌货的溢价百分比永远显示不出来');
+
+// 不能出现未定义的裸 Core 标识符（浏览器/VM 里它挂在 window.WastelandCore 上）。
+const bareCoreRefs = [...uiCode.matchAll(/(^|[^.\w])Core\s*\./gm)]
+  .map(m => uiCode.slice(Math.max(0, m.index - 60), m.index + 40).split('\n').pop());
+if (bareCoreRefs.length)
+  add('error', 'ui',
+    '界面里出现未定义的裸 Core 标识符（应为 window.WastelandCore）：' +
+    bareCoreRefs[0].trim());
+
 /* ── 12. 纯度系统 ────────────────────────────────────────── */
 const purityItems = ids.filter(id => CATALOG[id].puritySystem).length;
 const purityHits = (shopCode.match(/purity/gi) || []).length + (coreCode.match(/purity/gi) || []).length;
