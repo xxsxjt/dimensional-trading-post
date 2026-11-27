@@ -250,6 +250,7 @@ const TEST_SUITES = [
   ['auction-ceiling', 'tests/auction-prize-ceiling.cjs'],
   ['order-contract', 'tests/order-contract.cjs'],
   ['loot-expiry-contract', 'tests/loot-expiry-contract.cjs'],
+  ['loot-collect-contract', 'tests/loot-collect-contract.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['facility-storage', 'tests/facility-storage-repack.cjs'],
   ['counter-demand', 'tests/counter-demand.cjs'],
@@ -321,6 +322,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/auction-prize-ceiling.cjs', 11],
   ['tests/order-contract.cjs', 13],
   ['tests/loot-expiry-contract.cjs', 10],
+  ['tests/loot-collect-contract.cjs', 17],
   ['tests/facility-purifier-filter.cjs', 20],
   ['tests/facility-storage-repack.cjs', 16],
   ['tests/counter-demand.cjs', 21],
@@ -1709,6 +1711,55 @@ ok('D19 待领区界面不能直接读 loot.brandPremium',
 ok('D19 待领区界面不能引用未定义的 Core 标识符',
   !/(^|[^.\w])Core\s*\./.test(d22UiSrc),
   'Core 不是全局量 = ReferenceError 崩掉整个界面');
+
+/* 6b5. 待领区入库契约（缺陷 D24 / D25） ──────────────────────
+ *
+ * 待领区往仓库的搬运口只有一个：collectLoot(lootItems)。
+ *
+ *   D24 净化跑在摆放检查之前 → 仓库满了也能反复提品质（印钞机）
+ *   D25 待领区被整份覆盖   → 只提交子集时其余货被销毁
+ */
+const d24ShopSrc = shopSrc;
+const d24Body = (() => {
+  const m = d24ShopSrc.match(/function collectLoot\([\s\S]*?\n  \}/);
+  return m ? m[0] : '';
+})();
+
+ok('D24 collectLoot 必须存在',
+  !!d24Body,
+  '待领区的搬运口不见了 = 待领区永远清不掉');
+ok('D24 净化必须跑在摆放检查之后',
+  (() => {
+    if (!d24Body) return false;
+    const purify = d24Body.indexOf('_purifyLootItem(item)');
+    const place  = d24Body.indexOf('Core.place(state.grid, item, col, row)');
+    const stuck  = d24Body.indexOf('if (!placed)');
+    return purify > 0 && place > 0 && stuck > 0 && purify > place && stuck < purify;
+  })(),
+  '净化跑在摆放检查之前 = 仓库满了反复点「全部收入仓库」就能把纯度刷满');
+ok('D24 放置失败时必须原样退回，不能提品质',
+  /if\s*\(\s*!placed\s*\)\s*\{\s*stuck\.push\(item\);\s*return;\s*\}/.test(d24Body),
+  '放不下的货带着被提过的品质退回待领区 = 反复点击反复提档');
+ok('D24 待领区入库回归文件存在',
+  existsSync(resolve(root, 'tests/loot-collect-contract.cjs')));
+ok('D24 待领区入库变异测试文件存在',
+  existsSync(resolve(root, 'tests/loot-collect-contract-mutation.cjs')));
+ok('D24 变异测试必须唯一性校验锚点',
+  (() => {
+    const t = readFileSync(resolve(root, 'tests/loot-collect-contract-mutation.cjs'), 'utf8');
+    return /锚点不唯一/.test(t);
+  })(),
+  '锚点不唯一 = 变异改到了别处，回归测试照样全绿 = 假绿');
+
+ok('D25 待领区不能被整份覆盖',
+  !/state\.returnedLoot\s*=\s*stuck\s*;/.test(d24Body),
+  'stuck 只装了本次提交的货 = 没提交的待领货被凭空销毁');
+ok('D25 未提交的待领货必须原样保留',
+  /kept\.concat\(stuck\)/.test(d24Body),
+  '没提交的货必须留着 = 只提交子集不能吞掉其余的货');
+ok('D25 保留清单必须按 id 判重',
+  /submittedIds/.test(d24Body) && /if\s*\(it\.id\)\s*return\s*!submittedIds\[it\.id\]/.test(d24Body),
+  '按对象判重 = 同一件货的副本被当成两件货');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

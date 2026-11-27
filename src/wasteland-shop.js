@@ -3587,10 +3587,27 @@
   function collectLoot(lootItems) {
     var incoming = (lootItems || state.returnedLoot || []).slice();
     var stuck = [], purified = 0;
+    /* 缺陷 D25：待领区是**累积**的，不是「本次提交的清单」。
+     *
+     * 以前这里直接 `state.returnedLoot = stuck` ——
+     * stuck 只装了「本次提交、但仓库放不下」的那些货。
+     * 于是只要提交的清单是待领区的**子集**，
+     * 待领区里没被提交的那些货就凭空消失了（被覆盖掉，再也回不来）。
+     *
+     * 界面上的按钮传的是整份清单，所以日常点不到；
+     * 但任何按单件/按类领取的入口都会踩中。
+     * 修法：只动本次提交过的那些件，没提交的原样留下。 */
+    var submittedIds = {};
+    incoming.forEach(function (it) { if (it && it.id) submittedIds[it.id] = true; });
+    var kept = (state.returnedLoot || []).filter(function (it) {
+      if (!it) return false;
+      /* 有 id 就按 id 判；没有 id 就按对象同一性判。
+       * 两种都判不到才算「本次没提交」，原样留下。 */
+      if (it.id) return !submittedIds[it.id];
+      return incoming.indexOf(it) === -1;
+    });
     incoming.forEach(function (item) {
       if (!item) return;
-      // 入库前先过一遍净水器（只对打捞的水与化学品有效）
-      if (_purifyLootItem(item)) purified++;
       var placed = false;
       for (var row = 0; row < state.grid.rows && !placed; row++) {
         for (var col = 0; col < state.grid.cols && !placed; col++) {
@@ -3600,18 +3617,30 @@
           }
         }
       }
-      // 仓库放不下的留在待领区。此前会无条件清空 returnedLoot，
-      // 等于把塞不进去的货直接销毁。
-      if (!placed) stuck.push(item);
+      /* 缺陷 D24：净水器只能提**真正入库**的货。
+       *
+       * 以前净化跑在摆放检查**之前**：
+       *   仓库满了 → 货没进库 → 但 purity/quality 已经 +1 了，
+       *   然后这批货被退回待领区，货还带着被提过的品质。
+       *   玩家反复点「全部收入仓库 →」，
+       *   每点一次提一档，纯度 2→5 直接把卖价翻 5 倍（缺陷 D24）。
+       *
+       * 修法：先确认放得下，放进去之后再净化。
+       * 没进库的货原样退回，品质一分不动。 */
+      if (!placed) { stuck.push(item); return; }
+      if (_purifyLootItem(item)) purified++;
     });
-    state.returnedLoot = stuck;
+    /* 没提交的旧货在前，本次塞不下的在后 —— 两段都不丢。 */
+    state.returnedLoot = kept.concat(stuck);
     if (purified) {
       state.todayEvents.push(_makeEvent('purified', '净水器处理了 ' + purified + ' 件打捞物',
         '水与化学品纯度提升一档，卖价跟着上来。'));
     }
     if (stuck.length) {
+      /* 报数要报**待领区里剩下的总数**，不是只有这次塞不下的那几件 ——
+       * 之前没提交的那些货也还在待领区，报少了玩家会以为货丢了。 */
       state.todayEvents.push(_makeEvent('loot_blocked', '仓库放不下部分战利品',
-        '还有 ' + stuck.length + ' 件留在待领区，先腾出格位再领。'));
+        '还有 ' + state.returnedLoot.length + ' 件留在待领区，先腾出格位再领。'));
     }
     Core.saveGame(state);
     render();

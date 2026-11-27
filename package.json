@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
-    "test": "node tests/wasteland-shop.cjs && node tests/soak.cjs && node tests/npc-rules.cjs && node tests/faction-rules.cjs && node tests/world-switch-rules.cjs && node tests/machine-world-rules.cjs && node tests/machine-zone-lifecycle.cjs && node tests/save-migration.cjs && node tests/dispatch-rules.cjs && node tests/dispatch-rare-gate.cjs && node tests/dispatch-econ.cjs && node tests/dispatch-dispatch-target.cjs && node tests/dispatch-away-merchant.cjs && node tests/dispatch-power-cap.cjs && node tests/market-rules.cjs && node tests/auction-rules.cjs && node tests/auction-week.cjs && node tests/auction-reserve.cjs && node tests/auction-prize-ceiling.cjs && node tests/order-contract.cjs && node tests/loot-expiry-contract.cjs && node tests/facility-purifier-filter.cjs && node tests/facility-storage-repack.cjs && node tests/counter-demand.cjs && node tests/loop-rules.cjs && node tests/fuzz.cjs && node tests/build-retention.cjs && node tests/build-orphan-salvage.cjs",
+    "test": "node tests/wasteland-shop.cjs && node tests/soak.cjs && node tests/npc-rules.cjs && node tests/faction-rules.cjs && node tests/world-switch-rules.cjs && node tests/machine-world-rules.cjs && node tests/machine-zone-lifecycle.cjs && node tests/save-migration.cjs && node tests/dispatch-rules.cjs && node tests/dispatch-rare-gate.cjs && node tests/dispatch-econ.cjs && node tests/dispatch-dispatch-target.cjs && node tests/dispatch-away-merchant.cjs && node tests/dispatch-power-cap.cjs && node tests/market-rules.cjs && node tests/auction-rules.cjs && node tests/auction-week.cjs && node tests/auction-reserve.cjs && node tests/auction-prize-ceiling.cjs && node tests/order-contract.cjs && node tests/loot-expiry-contract.cjs && node tests/loot-collect-contract.cjs && node tests/facility-purifier-filter.cjs && node tests/facility-storage-repack.cjs && node tests/counter-demand.cjs && node tests/loop-rules.cjs && node tests/fuzz.cjs && node tests/build-retention.cjs && node tests/build-orphan-salvage.cjs",
     "test:unit": "node tests/wasteland-shop.cjs",
     "test:soak": "node tests/soak.cjs",
     "test:npc": "node tests/npc-rules.cjs",
@@ -38,6 +38,8 @@
     "test:order:mutation": "node tests/order-contract-mutation.cjs",
     "test:loot": "node tests/loot-expiry-contract.cjs",
     "test:loot:mutation": "node tests/loot-expiry-contract-mutation.cjs",
+    "test:loot:collect": "node tests/loot-collect-contract.cjs",
+    "test:loot:collect:mutation": "node tests/loot-collect-contract-mutation.cjs",
     "test:facility": "node tests/facility-purifier-filter.cjs",
     "test:facility:mutation": "node tests/facility-purifier-mutation.cjs",
     "test:storage": "node tests/facility-storage-repack.cjs",
