@@ -1374,12 +1374,77 @@
   }
 
 
+  /* 机器区（baseState.freeGrid）里的机器是可以**拆掉**的 —— 缺陷 D14 的核心修法。
+   *
+   * 以前机器区是个只进不出的单向门：
+   *   · 买进来的机器没有任何拆解/回收入口；
+   *   · 自由格里那台机器虽然标了 draggable，却**没接 dragstart**，
+   *     所以拖不动（拖起来 dataTransfer 是空的，drop 拿不到 id）；
+   *   · 机器区永远是写死的 4×3，界面上连容量都看不见。
+   * 于是「机器区已经排满。先腾个位置。」这句话是骗人的：
+   * 玩家压根没有任何办法腾出位置，产线从此锁死。
+   *
+   * 现在三件事一起做：
+   *   1. 容量随仓储等级长（Core.machineZoneRows），玩家看得见、也扩得动；
+   *   2. 加 scrapMachine：拆机返还一半价钱，格子立刻空出来；
+   *   3. 自由格的机器接上 dragstart，拖得动。
+   *
+   * 容量扩张时必须把机器**原样搬过去** —— 不能因为多了一排就把机器挤掉。 */
+  function _machineZoneRows() {
+    var slot = _slot('storage');
+    var level = (slot && slot.installed) ? (slot.level || 0) : 0;
+    if (Core.machineZoneRows) return Core.machineZoneRows(level);
+    return 3 + Math.max(0, Math.min(3, level));
+  }
+
   function _machineZone() {
     if (!state.baseState) return null;
-    if (!state.baseState.freeGrid) state.baseState.freeGrid = Core.createGrid(4, 3);
+    if (!state.baseState.freeGrid) state.baseState.freeGrid = Core.createGrid(4, _machineZoneRows());
+    _applyMachineZoneCapacity();
     return state.baseState.freeGrid;
   }
 
+  /* 机器区容量对齐到当前仓储等级。幂等：容量没变时什么都不做。
+   *
+   * **只增不减。** 机器区随仓储等级一起长，而仓储等级只升不降，
+   * 所以容量单调不减。万一目标行数比现在还小（读档时遇到被改坏的存档），
+   * 宁可不动，也绝不能因为「行数变少」把玩家的机器挤掉。
+   *
+   * 扩容时按格位顺序重新打包 —— 跟仓库扩容同一套思路。 */
+  function _applyMachineZoneCapacity() {
+    var grid = state.baseState && state.baseState.freeGrid;
+    if (!grid) return false;
+    var targetRows = _machineZoneRows();
+    if (!targetRows || targetRows <= grid.rows) return false;
+    var oldItems = [];
+    Object.keys(grid.items || {}).forEach(function (id) {
+      var entry = grid.items[id];
+      if (entry && entry.item) oldItems.push({item: entry.item, x: entry.x, y: entry.y});
+    });
+    oldItems.sort(function (a, b) {
+      if (a.y !== b.y) return a.y - b.y;
+      return a.x - b.x;
+    });
+    var newGrid = Core.createGrid(grid.cols, targetRows);
+    var overflow = [];
+    oldItems.forEach(function (e) {
+      var placed = false;
+      for (var r = 0; r < newGrid.rows && !placed; r++) {
+        for (var c = 0; c < newGrid.cols && !placed; c++) {
+          if (Core.canPlace(newGrid, e.item, c, r)) {
+            Core.place(newGrid, e.item, c, r);
+            placed = true;
+          }
+        }
+      }
+      if (!placed) overflow.push(e.item);
+    });
+    /* 装不下说明新格区还是不够大 —— 这时**放弃扩容**，
+     * 保留原网格，绝不能因为扩容把机器弄丢。 */
+    if (overflow.length) return false;
+    state.baseState.freeGrid = newGrid;
+    return true;
+  }
   function _machinesOnFloor() {
     var grid = _machineZone();
     if (!grid) return [];
@@ -1454,6 +1519,73 @@
     render();
   }
 
+  // ── scrapMachine：拆机腾位 ────────────────────────────────
+  //
+  // 缺陷 D14：机器区以前是个只进不出的单向门。机器区满了以后，
+  // 玩家收到的唯一提示是「机器区已经排满。先腾个位置。」——
+  // 而「腾位置」这件事**根本没有任何入口**，产线就此锁死。
+  // 现在拆机是正式玩法：返还一半原价，格子立刻空出来。
+  //
+  // 正在跑活的机器不许拆：那一批的原料已经扣掉了，
+  // 拆了机器等于凭空吞掉原料（_tickProduction 里机器消失会作废批次但不退料）。
+  function scrapMachine(machineId) {
+    if (state.gameOver) return;
+    var machine = _machineById(machineId);
+    if (!machine) return;
+    var def = Core.machineDef(machine.machineKey);
+    if (!def) return;
+    if (_machineBusy(machineId)) {
+      state.todayEvents.push(_makeEvent('machine_fail', machine.name + '正忙着',
+        '这台机器上还有一批活没做完，做完再拆。'));
+      render();
+      return;
+    }
+    var value = def.scrapValue || Math.floor((def.cost || 0) / 2);
+    var grid = _machineZone();
+    if (!grid) return;
+    Core.remove(grid, machineId);
+    state.gold += value;
+    state.todayEvents.push(_makeEvent('machine', '拆掉了' + machine.name,
+      '回收 ¤' + value + '，机器区腾出了 ' + (machine.w || 1) + '×' + (machine.h || 1) + ' 格。'));
+    Core.saveGame(state);
+    render();
+  }
+
+  // ── upgradeMachine：给机器升一级 ──────────────────────────
+  //
+  // 缺陷 D14 的另一半：machine.level 这个字段**永远**是 1，
+  // 于是 recipeFailChance 里那句「机器越好越稳」（每级减免 4% 失败率）
+  // 是一个**永远不会生效的承诺**。升一级让失败率真的降一档。
+  function upgradeMachine(machineId) {
+    if (state.gameOver) return;
+    var machine = _machineById(machineId);
+    if (!machine) return;
+    var def = Core.machineDef(machine.machineKey);
+    if (!def) return;
+    var level = machine.level || 1;
+    var maxLevel = Core.MACHINE_MAX_LEVEL || 3;
+    if (level >= maxLevel) {
+      state.todayEvents.push(_makeEvent('machine_fail', def.label + '已是最高等级',
+        def.label + ' 已经升到 LV' + maxLevel + '，无法继续升级。'));
+      render();
+      return;
+    }
+    var cost = (def.upgradeCost || [])[level - 1];
+    if (typeof cost !== 'number') return;
+    /* 判据用**能花的钱**（余额 - 拍卖冻结款）。见安装设施处的说明。 */
+    if (_spendableGold() < cost) {
+      state.todayEvents.push(_makeEvent('machine_fail', '资金不足',
+        '升级' + def.label + '需要 ¤' + cost + '，当前余额 ¤' + state.gold + '。'));
+      render();
+      return;
+    }
+    state.gold -= cost;
+    machine.level = level + 1;
+    state.todayEvents.push(_makeEvent('machine', def.label + '升至 LV' + machine.level,
+      '支出 ¤' + cost + '。失败率再降一档。'));
+    Core.saveGame(state);
+    render();
+  }
   // ── startProduction：排一批活 ──────────────────────────────
   function startProduction(machineId, recipeId) {
     if (state.gameOver) return;
@@ -3422,7 +3554,11 @@
     if (machineEl && UI.renderMachineZone) {
       UI.renderMachineZone(machineEl, _machineZoneData(), {
         onBuy:     buyMachine,
-        onProduce: startProduction
+        onProduce: startProduction,
+        /* 缺陷 D14：拆机与升级是机器区唯一的「出口」和「成长」。
+         * 没有它们，机器区满了就只能看着提示干瞪眼。 */
+        onScrap:   scrapMachine,
+        onUpgrade: upgradeMachine
       });
     }
   }
@@ -3469,6 +3605,17 @@
         h:          machine.h,
         level:      machine.level || 1,
         foreign:    foreign,
+        /* 缺陷 D14：把「这台机器能拆成多少」「升下一级要多少」摆到界面上。
+         * 以前这些信息根本不存在，机器区是个只进不出的单向门。 */
+        scrapValue: (Core.machineDef(machine.machineKey) || {}).scrapValue ||
+                     Math.floor(((Core.machineDef(machine.machineKey) || {}).cost || 0) / 2),
+        upgradeCost: (function () {
+          var d = Core.machineDef(machine.machineKey) || {};
+          var lv = machine.level || 1;
+          var arr = d.upgradeCost || [];
+          return lv < (Core.MACHINE_MAX_LEVEL || 3) ? arr[lv - 1] : null;
+        })(),
+        maxLevel:   Core.MACHINE_MAX_LEVEL || 3,
         foreignLabel: foreign
           ? (machineWorld === 'xianxia_sect' ? '灵霄宗门界' : '核爆废土') + '的手艺，本界开不了工'
           : '',
@@ -3481,6 +3628,14 @@
       craftable[rid] = Core.canStartRecipe(state, rid);
     });
 
+    /* 机器区容量必须让玩家看见 —— 缺陷 D14 之前界面上一个数字都没有，
+     * 玩家只看到「已经排满」，却不知道自己有多少格、能不能扩。 */
+    var zone = _machineZone();
+    var zoneCols = zone ? zone.cols : 4;
+    var zoneRows = zone ? zone.rows : _machineZoneRows();
+    var usedCells = 0;
+    machines.forEach(function (m) { usedCells += (m.w || 1) * (m.h || 1); });
+
     return {
       machines:    machines,
       available:   available,
@@ -3488,7 +3643,13 @@
       craftable:   craftable,
       gold:        state.gold,
       powerOnline: _powerOnline(),
-      worldName:   _worldLabel(worldId)
+      worldName:   _worldLabel(worldId),
+      zoneCols:    zoneCols,
+      zoneRows:    zoneRows,
+      zoneCells:   zoneCols * zoneRows,
+      zoneUsed:    usedCells,
+      zoneFree:    Math.max(0, zoneCols * zoneRows - usedCells),
+      zoneCanGrow: _machineZoneRows() > zoneRows
     };
   }
 

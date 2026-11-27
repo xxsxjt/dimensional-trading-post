@@ -879,6 +879,14 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-machines__world { font-size: 10px; color: var(--wl-muted); }
 .wl-machines__power { margin-top: 8px !important; font-size: 10px; color: var(--wl-good); }
 .wl-machines__power--off { color: var(--wl-amber); }
+/* 机器区容量行（缺陷 D14）：机器区多大、占了多少，一眼看清楚。 */
+.wl-machines__capacity { margin-top: 4px !important; font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
+/* 拆解 / 升级按钮 */
+.wl-machine__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.wl-machine__max { font-size: 10px; color: var(--wl-good); align-self: center; }
+.wl-btn--danger { border-color: rgba(255, 126, 142, .45); color: #ff9aa8; background: rgba(255, 126, 142, .07); }
+.wl-btn--danger:hover { background: rgba(255, 126, 142, .14); border-color: rgba(255, 126, 142, .7); }
+.wl-btn--danger:disabled { opacity: .45; cursor: not-allowed; }
 .wl-machines__shop { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--wl-rule); }
 .wl-machines__shop-title { display: block; margin-bottom: 8px; font-size: 10px; letter-spacing: .06em; color: var(--wl-muted); }
 .wl-machines__running { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--wl-rule); }

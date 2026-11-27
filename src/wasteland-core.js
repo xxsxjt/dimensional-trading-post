@@ -675,21 +675,32 @@
     smelter:{
       key:'smelter',label:'熔炉',icon:'🔥',w:2,h:2,cost:300,world:'wasteland_nuclear',
       desc:'把废铁废铜熔成规整的金属锭。废土上最常见的第一台机器。',
+      /* 拆解回收价与升级价。
+       *
+       * 以前这两件事**根本不存在** —— 机器区是个只进不出的单向门：
+       * 买进来的机器永远拆不掉、机器区永远是固定 4×3，
+       * 于是「机器区已经排满。先腾个位置。」这句话是骗人的：
+       * 玩家没有任何办法腾出位置（缺陷 D14）。
+       * 回收价取原价一半：机器拆了就没了，这是有代价的腾挪，不是无损退货。 */
+      scrapValue:150,upgradeCost:[240,420],
       recipes:['melt_iron','melt_copper','melt_steel','alloy_brass']
     },
     workbench:{
       key:'workbench',label:'装配台',icon:'🔧',w:2,h:1,cost:420,world:'wasteland_nuclear',
       desc:'把零件拼成整机。单价最高的产品出在这里，也最容易烧板子。',
+      scrapValue:210,upgradeCost:[340,600],
       recipes:['fix_board','build_drill','build_inverter','build_radio']
     },
     chem_still:{
       key:'chem_still',label:'化工台',icon:'⚗️',w:2,h:1,cost:380,world:'wasteland_nuclear',
       desc:'提纯与合成腐蚀性药剂，气味很大，成品单价不低。',
+      scrapValue:190,upgradeCost:[300,540],
       recipes:['refine_acid','make_toxin','make_coolant']
     },
     alchemy_furnace:{
       key:'alchemy_furnace',label:'丹炉',icon:'🏺',w:2,h:2,cost:650,world:'xianxia_sect',
       desc:'灵霄宗门界的看家本事。原料便宜、丹药极贵，但炼制失败会出一炉废丹。',
+      scrapValue:325,upgradeCost:[520,900],
       recipes:['alchemy_qi','alchemy_spirit','alchemy_heal','alchemy_toxic','alchemy_marrow']
     },
     talisman_desk:{
@@ -700,9 +711,13 @@
     spirit_field:{
       key:'spirit_field',label:'灵田',icon:'🌱',w:2,h:2,cost:200,world:'xianxia_sect',
       desc:'种下药种，几天后收一茬灵草。所有丹方的最上游。',
+      scrapValue:100,upgradeCost:[160,280],
       recipes:['grow_lingcao','grow_huoyan']
     }
   };
+
+  /* 机器最高等级。升到 LV3 为止（与固定设施一致）。 */
+  var MACHINE_MAX_LEVEL=3;
 
   // 每道配方：吃 inputs、烧 days 天、出 output。failChance 命中则只出 failOutput。
   var RECIPE_DEFS={
@@ -836,6 +851,19 @@
 
   function machineDef(key){return MACHINE_DEFS[key]||null;}
   function recipeDef(id){return RECIPE_DEFS[id]||null;}
+
+  /* 机器区容量：随「仓储」设施等级一起长。
+   *
+   * 以前机器区是**写死的 4×3**（12 格），而且界面上完全看不出来：
+   * 玩家只看到「机器区已经排满。先腾个位置。」，
+   *  却既不知道机器区有多大、也不知道自己能扩、
+   *  更没有任何办法腾出位置 —— 机器区是个只进不出的单向门（缺陷 D14）。
+   *
+   * 现在：仓储每升一级，机器区多一排（与仓库同节奏）。
+   * 玩家拆掉一台机器就能腾出它的格子，机器区因此是能进能出的。 */
+  function machineZoneRows(storageLevel){
+    return 3 + Math.max(0, Math.min(3, storageLevel||0));
+  }
 
   // 一道配方在给定机器等级下的实际失败率：机器越好越稳
   function recipeFailChance(recipe,machineLevel){
@@ -1285,6 +1313,8 @@
      * 期望值只有一个来源。改实现 → 测试立刻红。 */
     _generateDispatchLoot: _generateDispatchLoot,
     MACHINE_DEFS: MACHINE_DEFS,
+    MACHINE_MAX_LEVEL: MACHINE_MAX_LEVEL,
+    machineZoneRows: machineZoneRows,
     RECIPE_DEFS: RECIPE_DEFS,
     machineDef: machineDef,
     recipeDef: recipeDef,

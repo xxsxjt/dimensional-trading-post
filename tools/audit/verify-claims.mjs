@@ -235,6 +235,7 @@ const TEST_SUITES = [
   ['faction', 'tests/faction-rules.cjs'],
   ['world-switch', 'tests/world-switch-rules.cjs'],
   ['machine-world', 'tests/machine-world-rules.cjs'],
+  ['machine-zone', 'tests/machine-zone-lifecycle.cjs'],
   ['dispatch', 'tests/dispatch-rules.cjs'],
   ['dispatch-rare-gate', 'tests/dispatch-rare-gate.cjs'],
   ['dispatch-econ', 'tests/dispatch-econ.cjs'],
@@ -274,6 +275,8 @@ ok('换界回归文件存在', existsSync(resolve(root, 'tests/world-switch-rule
 ok('换界变异测试文件存在', existsSync(resolve(root, 'tests/world-switch-mutation.cjs')));
 ok('机器世界归属回归文件存在', existsSync(resolve(root, 'tests/machine-world-rules.cjs')));
 ok('机器世界归属变异测试文件存在', existsSync(resolve(root, 'tests/machine-world-mutation.cjs')));
+ok('机器区生命周期回归文件存在', existsSync(resolve(root, 'tests/machine-zone-lifecycle.cjs')));
+ok('机器区生命周期变异测试文件存在', existsSync(resolve(root, 'tests/machine-zone-lifecycle-mutation.cjs')));
 ok('派遣回归文件存在', existsSync(resolve(root, 'tests/dispatch-rules.cjs')));
 ok('派遣变异测试文件存在', existsSync(resolve(root, 'tests/dispatch-mutation.cjs')));
 ok('派遣稀有门槛回归文件存在', existsSync(resolve(root, 'tests/dispatch-rare-gate.cjs')));
@@ -299,6 +302,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/faction-rules.cjs', 8],
   ['tests/world-switch-rules.cjs', 8],
   ['tests/machine-world-rules.cjs', 8],
+  ['tests/machine-zone-lifecycle.cjs', 10],
   ['tests/dispatch-rules.cjs', 26],
   ['tests/dispatch-rare-gate.cjs', 17],
   ['tests/dispatch-econ.cjs', 21],
@@ -1312,6 +1316,73 @@ ok('D13 柜台需求回归文件存在',
   existsSync(resolve(root, 'tests/counter-demand.cjs')));
 ok('D13 柜台需求变异测试文件存在',
   existsSync(resolve(root, 'tests/counter-demand-mutation.cjs')));
+
+/* 6b-15. 缺陷 D14：机器区不能是只进不出的单向门
+ *
+ * 机器区（baseState.freeGrid）初始化成固定 4×3，界面提示「机器区已经排满。
+ * 先腾个位置。」——但**「腾位置」这件事根本没有任何入口**：
+ *   · 买进来的机器没有拆解/回收入口，产线一旦排满就永久锁死；
+ *   · 自由格里的机器标了 draggable，却**没接 dragstart**，
+ *     拖起来 dataTransfer 是空的，onFacilityDrop 直接 return —— 拖不动；
+ *   · machine.level 永远是 1，于是 recipeFailChance 里「机器越好越稳」
+ *     （每级减免 4% 失败率）是永不生效的承诺；
+ *   · 机器区容量既看不见（界面不显示已用/总格数），也扩不动（写死 4×3）。
+ *
+ * 修法四件套：scrapMachine（拆机退一半）、upgradeMachine（升级降失败率）、
+ * machineZoneRows（容量随仓储长）、自由格接上 dragstart。
+ */
+const d14ShopSrc = shopSrc;
+const d14CoreSrc = coreSrc;
+const d14UiSrc = src('src/wasteland-ui.js');
+ok('D14 必须有拆机入口 scrapMachine',
+  /function\s+scrapMachine\s*\(/.test(d14ShopSrc),
+  '没有拆机，机器区就是单向门，「先腾个位置」是骗人的');
+ok('D14 拆机必须返还 scrapValue 给玩家',
+  /scrapValue/.test(d14ShopSrc) && /state\.gold\s*\+=\s*value/.test(d14ShopSrc),
+  '拆机不退钱，就等于变相没收玩家的机器');
+ok('D14 拆机必须真的把机器从机器区拿走',
+  /Core\.remove\s*\(\s*grid\s*,\s*machineId\s*\)/.test(d14ShopSrc),
+  '格子不腾出来，扩容和再买都是空话');
+ok('D14 正在跑活的机器不许拆',
+  /function\s+scrapMachine[\s\S]{0,900}?_machineBusy\s*\(/.test(d14ShopSrc),
+  '批次原料已经扣了，拆机等于凭空吞料');
+ok('D14 必须有机器升级入口 upgradeMachine',
+  /function\s+upgradeMachine\s*\(/.test(d14ShopSrc),
+  '没有升级，machine.level 就是死字段');
+ok('D14 升级必须抬机器等级并扣钱',
+  /function\s+upgradeMachine[\s\S]{0,1200}?machine\.level\s*=\s*level\s*\+\s*1/.test(d14ShopSrc) &&
+  /function\s+upgradeMachine[\s\S]{0,1200}?state\.gold\s*-=\s*cost/.test(d14ShopSrc),
+  '升级要么不涨等级要么白送，两个都不行');
+ok('D14 机器等级必须有上限',
+  /MACHINE_MAX_LEVEL/.test(d14CoreSrc) && /MACHINE_MAX_LEVEL/.test(d14ShopSrc),
+  '没有上限就能无限升，失败率会掉到 0 以下');
+ok('D14 失败率减免必须真的读机器等级',
+  /recipeFailChance[\s\S]{0,600}?machineLevel/.test(d14CoreSrc),
+  '「机器越好越稳」是承诺，抬等级却不读等级就是空头支票');
+ok('D14 机器区容量必须随仓储等级扩张',
+  /function\s+machineZoneRows/.test(d14CoreSrc) &&
+  /machineZoneRows/.test(d14ShopSrc) &&
+  /_applyMachineZoneCapacity/.test(d14ShopSrc),
+  '容量写死 4×3，仓储升级白升');
+ok('D14 扩容必须把原有机器原样搬过去',
+  /function\s+_applyMachineZoneCapacity[\s\S]{0,2000}?Core\.place/.test(d14ShopSrc) &&
+  /function\s+_applyMachineZoneCapacity[\s\S]{0,2000}?overflow/.test(d14ShopSrc),
+  '扩容把机器挤掉，比不扩容还惨');
+ok('D14 自由格里的机器必须接上 dragstart',
+  /dragstart/.test(d14UiSrc) && /setData\s*\(\s*['"]text\/plain['"]/.test(d14UiSrc),
+  '标了 draggable 却没接 dragstart，就是拖不动');
+ok('D14 界面必须显示机器区容量',
+  /zoneUsed/.test(d14UiSrc) && /zoneCells/.test(d14UiSrc),
+  '玩家看不到自己能装多少，就只能撞墙才知道');
+ok('D14 界面必须给出拆机按钮',
+  /onScrap/.test(d14UiSrc) && /wl-btn--danger/.test(d14UiSrc),
+  '拆机逻辑写得再好，界面上没有按钮等于没有');
+ok('D14 界面必须给出升级按钮',
+  /onUpgrade/.test(d14UiSrc) && /upgradeCost/.test(d14UiSrc),
+  '玩家看不到升级价和升级入口');
+ok('D14 机器定义必须写明回收价与升级价',
+  /scrapValue\s*:/.test(d14CoreSrc) && /upgradeCost\s*:/.test(d14CoreSrc),
+  '每台机器都得有拆解回收价与两级升级价');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

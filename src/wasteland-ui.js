@@ -937,6 +937,21 @@
           facDiv.appendChild(iconNode(slotIcon, '🏗', 'wl-facility-slot-icon'));
           facDiv.appendChild(el('span', { style: 'font-size:9px;text-align:center;max-width:' + (FCELL * (fac.w || 1) - 8) + 'px;overflow:hidden;' },
             esc(fac.name || '设施')));
+          /* 缺陷 D14：这台机器以前标了 draggable，却**没接 dragstart**。
+           * 于是拖起来 dataTransfer 里是空的，drop 拿不到 id，
+           * 自由格里的机器根本拖不动 —— 机器区是个只进不出的单向门。
+           * 现在把 id 塞进 dataTransfer，机器才真的能挪。 */
+          (function (fid) {
+            if (!fid) return;
+            on(facDiv, 'dragstart', function (e) {
+              if (e && e.dataTransfer) {
+                e.dataTransfer.setData('text/plain', fid);
+                e.dataTransfer.effectAllowed = 'move';
+              }
+              facDiv.style.opacity = '.45';
+            });
+            on(facDiv, 'dragend', function () { facDiv.style.opacity = ''; });
+          })(fac.id);
           fGrid.appendChild(facDiv);
         } else if (!fac) {
           var fEmpty = el('div', {
@@ -1241,6 +1256,16 @@
       d.powerOnline ? '⚡ 电力在线，机器可以开工' : '⚠ 断电：机器停工，批次原地等待，不消耗原料');
     container.appendChild(power);
 
+    /* 机器区容量（缺陷 D14）：以前界面上一个数字都没有，
+     * 玩家只收到一句「机器区已经排满。先腾个位置。」，
+     * 却不知道自己有多少格、能不能扩、更不知道怎么腾。 */
+    if (d.zoneCells) {
+      var capLine = el('p', {class:'wl-machines__capacity'},
+        '机器区 ' + (d.zoneUsed || 0) + '/' + (d.zoneCells || 0) + ' 格' +
+        (d.zoneCanGrow ? '（升级仓储可再扩一排）' : ''));
+      container.appendChild(capLine);
+    }
+
     // 在架机器
     if (!machines.length) {
       container.appendChild(el('p', {class:'wl-empty'},
@@ -1259,6 +1284,31 @@
           '运行中 ' + (m.running.totalDays - m.running.daysLeft) + '/' + m.running.totalDays + ' 天'));
       }
       card.appendChild(chead);
+
+      /* 拆解与升级（缺陷 D14）：
+       * 拆机是机器区唯一的出口 —— 没有它，机器区满了之后产线就锁死了；
+       * 升级是 machine.level 唯一的来源 —— 没有它，
+       * 「机器越好越稳」那条失败率减免永远不生效。 */
+      var acts = el('div', {class:'wl-machine__actions'});
+      if (m.upgradeCost != null && cb.onUpgrade) {
+        var upBtn = el('button', {type:'button',class:'wl-btn wl-btn--sm',
+          'aria-label':'把' + m.name + '升到 LV' + ((m.level || 1) + 1)},
+          '升级 LV' + ((m.level || 1) + 1) + ' ¤' + m.upgradeCost);
+        upBtn.disabled = (d.gold || 0) < m.upgradeCost;
+        on(upBtn, 'click', function () { if (cb.onUpgrade) cb.onUpgrade(m.id); });
+        acts.appendChild(upBtn);
+      } else if (m.upgradeCost == null && m.maxLevel) {
+        acts.appendChild(el('small', {class:'wl-machine__max'}, '已达最高等级'));
+      }
+      if (cb.onScrap) {
+        var scrapBtn = el('button', {type:'button',class:'wl-btn wl-btn--sm wl-btn--danger',
+          'aria-label':'拆掉' + m.name + '，回收 ¤' + (m.scrapValue || 0)},
+          '拆掉 ¤' + (m.scrapValue || 0));
+        scrapBtn.disabled = !!m.running;
+        on(scrapBtn, 'click', function () { if (cb.onScrap) cb.onScrap(m.id); });
+        acts.appendChild(scrapBtn);
+      }
+      card.appendChild(acts);
 
       var list = el('div', {class:'wl-machine__recipes'});
       var def = (window.WastelandCore && window.WastelandCore.machineDef)
