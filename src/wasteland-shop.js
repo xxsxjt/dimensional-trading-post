@@ -57,7 +57,9 @@
       color:CATEGORY_COLOR[item.category] || '#a7b8ce',
       w: rot ? item.h : item.w,
       h: rot ? item.w : item.h,
-      rotated: rot
+      rotated: rot,
+      /* 缺陷 D19：把品牌溢价一起带出来，详情面板才显示得出溢价多少。 */
+      brandPremium: Core.brandMultiplier ? Core.brandMultiplier(item) : 1
     });
   }
 
@@ -447,6 +449,41 @@
     return Math.max(1, Math.round(listPrice * mid));
   }
 
+  /* 订购数量的归一（缺陷 D21）。
+   * 返回 1~10 的**整数**：非整数四舍五入，非数按 1，越界夹到区间内。
+   * 归一之后 want 是整数，预付的钱与到货的件数就一定相等。 */
+  function _normalizeOrderQty(qty) {
+    var n = Number(qty);
+    if (!isFinite(n)) n = 1;
+    n = Math.round(n);
+    if (n < 1) n = 1;
+    if (n > 10) n = 10;
+    return n;
+  }
+
+  /* 品牌分配（缺陷 D19）。
+   *
+   * 品牌由 (供应商, 货号) **确定**地决定，不随机：
+   *   · 随机的话，面板上显示的报价与实际扣款就对不上
+   *     （面板展示价 = 扣款，这条不变量是硬要求）；
+   *   · 确定的话，面板可以直接标出「灰炉 铁锭1kg · 溢价 +16%」，
+   *     玩家能自己挑：溢价高的牌子在柜台上一转手多赚。
+   *
+   * 哈希用纯字符串运算，不用随机数 ——
+   * 这样同一个 (供应商, 货号) 在任何一局、任何一次读档后都是同一个牌子，
+   * 面板上的报价不会因为重开一次就变。
+   */
+  function _brandFor(contactId, skuId) {
+    var brands = BRANDS[contactId];
+    if (!brands || !brands.length) return null;
+    var h = 0;
+    var key = String(contactId) + '|' + String(skuId);
+    for (var i = 0; i < key.length; i++) {
+      h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    }
+    return brands[h % brands.length];
+  }
+
   // 按声誉与成交次数解锁人脉
   function _refreshContacts() {
     if (!Array.isArray(state.contacts)) state.contacts = defaultContacts();
@@ -477,12 +514,34 @@
     var sku = Core.ITEM_CATALOG[skuId];
     if (!sku || sku.category !== contact.category) return;
 
-    var want = Math.max(1, Math.min(10, qty || 1));
-    var probe = Core.createItem(skuId, { quality: 3, genuine: true, origin: 'order' });
+    /* 缺陷 D21：数量必须是**整数**。
+     * 以前这里写的是 `Math.max(1, Math.min(10, qty || 1))`，
+     * qty = 1.5 时 want 就是 1.5 ——
+     * 预付按 1.5 件的钱扣（¤22.5），到货时 `for (n = 0; n < order.qty; n++)`
+     * 却跑了 2 轮（n = 0, 1），玩家**付 1.5 件的钱拿到 2 件货**。
+     * 钱和货在这里对不上，而且是在预付这条线上。
+     *
+     * 修法：先归一再夹区间。1.5 → 2（四舍五入，向上不亏玩家），
+     * 负数 → 1，NaN → 1，超上限 → 10。
+     * 归一之后 want 是整数，扣多少就发多少，两边永远对得上。 */
+    var want = _normalizeOrderQty(qty);
+
+    /* 缺陷 D19：品牌按「供应商 + 货号」**确定**地分配，不随机。
+     *
+     * 关键不是「随机」还是「确定」，而是**面板与扣款必须一致**：
+     * 面板上写着「预付 ¤X / 件」，玩家点了就该扣 ¤X。
+     * 如果品牌每次下单都重新抽，扣款跟着品牌浮动，
+     * 面板显示的价就变成了「可能付的价」—— 那条不变量就破了。
+     *
+     * 所以品牌由 (contactId, skuId) 唯一决定：
+     * 面板上直接标出这批货是什么牌子、值多少，
+     * 下单时用的是同一个牌子、同一份报价，扣的钱分毫不差。
+     * 玩家于是能**挑货**：同一个人脉、同一个品类，有的牌子溢价高、
+     * 有的没有 —— 溢价高的牌子在柜台上一转手就多赚。
+     */
+    var brand = _brandFor(contactId, skuId);
+    var probe = Core.createItem(skuId, { quality: 3, genuine: true, origin: 'order', brand: brand });
     var listPrice = Core.computePrice(state.market, probe);
-    // 品牌货按档位加价：品牌名写进 item.brand，界面与鉴定都看得到
-    var brands = BRANDS[contactId] || [];
-    var brand  = brands.length ? brands[Math.floor(Math.random() * brands.length)] : null;
     // 面板展示的就是这里的报价：下单先付款，报价必须等于扣款，
     // 否则玩家看到的价和实际付的价会对不上。
     var unitCost = _contactUnitCost(def, listPrice);
@@ -527,7 +586,7 @@
     state.orders.forEach(function (order) {
       order.daysLeft -= 1;
       if (order.daysLeft > 0) { remaining.push(order); return; }
-      var arrived = 0;
+      var arrived = 0, stored = 0, overflow = 0;
       for (var n = 0; n < order.qty; n++) {
         var item;
         try {
@@ -536,13 +595,31 @@
         if (!_placeInWarehouse(item)) {
           if (!state.returnedLoot) state.returnedLoot = [];
           state.returnedLoot.push(item);
+          overflow++;
           arrived++;
           continue;
         }
+        stored++;
         arrived++;
       }
+      /* 缺陷 D18：到货事件必须**说实话**。
+       *
+       * 以前这里无条件写「已入仓库」——
+       * 哪怕仓库满到一件都放不下、货全进了待领区，
+       * 事件照样说「已入仓库」。玩家按这条记事去仓库找货，
+       * 找不到，只会觉得货丢了。
+       *
+       * 现在分开报数：入库几件、待领区几件，各说各的。
+       * 待领区那部分要点名「在待领区」，玩家才知道去哪儿取。
+       */
+      var label = (order.brand ? order.brand + ' ' : '') + order.name + ' ×' + arrived;
+      var where = overflow > 0
+        ? (stored > 0
+            ? '入库 ' + stored + ' 件，待领区 ' + overflow + ' 件（仓库放不下，先去基地领取）。'
+            : '仓库放不下，' + overflow + ' 件都在待领区，先腾出格位再领。')
+        : '已入仓库。';
       state.todayEvents.push(_makeEvent('order_arrived', order.contact + ' 的货到了',
-        (order.brand ? order.brand + ' ' : '') + order.name + ' ×' + arrived + '，已入仓库。'));
+        label + '，' + where));
     });
     state.orders = remaining;
   }
@@ -4066,16 +4143,42 @@
       }).slice(0, 3);
       var items = keys.map(function (skuId) {
         var sku = catalog[skuId];
-        var probe = Core.createItem(skuId, { quality: 3, genuine: true, origin: 'order' });
+        /* 缺陷 D19：报价必须算在**这个货号对应的品牌**上，
+         * 而不是无品牌价 —— 否则面板显示的价与到货的货不是同一件东西。
+         * 品牌由 (供应商, 货号) 确定，所以面板上标出来的品牌
+         * 就是下单时打上的那个品牌，两边永远一致。 */
+        var brand = _brandFor(contact.id, skuId);
+        var probe = Core.createItem(skuId, { quality: 3, genuine: true, origin: 'order', brand: brand });
         var listPrice = Core.computePrice(state.market, probe);
+        var brandMult = Core.brandMultiplier ? Core.brandMultiplier(probe) : 1;
         return {
           skuId: skuId,
           name:  sku.name,
+          brand: brand,
+          brandPremium: brandMult,
           listPrice: listPrice,
           unitCost:  _contactUnitCost(def, listPrice)
         };
       });
-      byContact[contact.id] = { items: items, gold: state.gold };
+      /* 缺陷 D20：在途订单必须看得见。
+       * 订购是**预付**：钱当场就扣掉了，货还要等几天。
+       * 以前这条记录只躺在存档里，界面上一个像素都看不到 ——
+       * 玩家只知道「钱少了」，不知道少了多少、买的是什么、还有几天到。
+       * 现在把在途单按供应商分下去，人脉面板上直接列出。 */
+      var pending = (state.orders || []).filter(function (o) {
+        return o && o.contactId === contact.id;
+      }).map(function (o) {
+        return {
+          id: o.id,
+          name: o.name,
+          brand: o.brand,
+          qty: o.qty,
+          unitCost: o.unitCost,
+          paid: o.unitCost * o.qty,
+          daysLeft: o.daysLeft
+        };
+      });
+      byContact[contact.id] = { items: items, gold: state.gold, pending: pending };
     });
     return byContact;
   }
@@ -4250,7 +4353,18 @@
     container.innerHTML = '';
     var title = document.createElement('p');
     title.style.cssText = 'font-weight:700;color:#ffc867;margin:0 0 8px;font-size:13px;';
-    title.textContent   = '🎁 派遣归来，共 ' + lootItems.length + ' 件物资';
+    /* 缺陷 D18：待领区不只有派遣战利品。
+     * 订购到货时仓库放不下的货也进这里（origin === 'order'），
+     * 而这里无条件写「派遣归来」—— 说的是另一件事。
+     * 玩家看到「派遣归来」，却等的是人脉订购的货，找错了原因。
+     * 现在按来源分开报数。 */
+    var parts = _lootSourceCounts(lootItems);
+    var labels = [];
+    if (parts.salvage) labels.push('派遣归来 ' + parts.salvage + ' 件');
+    if (parts.order)   labels.push('订购到货 ' + parts.order + ' 件');
+    if (parts.other)   labels.push('其它 ' + parts.other + ' 件');
+    title.textContent = '🎁 待领区，共 ' + lootItems.length + ' 件物资' +
+      (labels.length ? '（' + labels.join(' · ') + '）' : '');
     container.appendChild(title);
     var btn = document.createElement('button');
     btn.className   = 'wl-btn wl-btn--primary wl-btn--sm';
@@ -4258,6 +4372,19 @@
     btn.textContent = '全部入库';
     btn.addEventListener('click', function () { collectLoot(); });
     container.appendChild(btn);
+  }
+
+  /* 待领区按来源分类计数。
+   * salvage = 派遣带回的（带 dispatchId）；order = 订购到货放不下的。 */
+  function _lootSourceCounts(lootItems) {
+    var out = { salvage: 0, order: 0, other: 0 };
+    (lootItems || []).forEach(function (it) {
+      if (!it) return;
+      if (it.dispatchId) out.salvage++;
+      else if (it.origin === 'order') out.order++;
+      else out.other++;
+    });
+    return out;
   }
 
   // ── mount：初始化并挂载 ───────────────────────────────────

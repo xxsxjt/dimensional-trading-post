@@ -12,8 +12,43 @@
   /* ─── 品质系统 ─────────────────────────────────────────────────── */
   var QUALITY_NAMES={1:'损坏',2:'劣质',3:'普通',4:'良好',5:'优质'};
   var QUALITY_MULT={1:0.3,2:0.6,3:1.0,4:1.4,5:2.0};
-  var ORIGIN_NAMES={salvage:'拾荒所得',auction:'集装箱拍卖',trade:'贸易',craft:'自制',unknown:'来源不明'};
+  var ORIGIN_NAMES={salvage:'拾荒所得',auction:'集装箱拍卖',trade:'贸易',craft:'自制',order:'人脉订购',unknown:'来源不明'};
   var CATEGORY_NAMES={water:'水资源',alcohol:'酒类',chemical:'化学品',food:'食物',material:'金属材料',tech:'电子科技',medicine:'药品',equipment:'装备',illegal:'违禁品',misc:'杂项',tobacco:'烟草'};
+
+  /* ─── 品牌溢价 ───────────────────────────────────────────────────
+   *
+   * 缺陷 D19：品牌是**死维度**。
+   * 商店侧给订购的货打上品牌（灰炉 / 重铸会 / 北脊……），
+   * 代码注释也写着「品牌货按档位加价」，
+   * 但 computePrice 从来没读过 item.brand ——
+   * 同一款货，三个品牌、一个价；无品牌、也是一个价。
+   * 玩家看到的品牌名纯粹是装饰，鉴定面板里甚至没有这一行。
+   *
+   * 修法：品牌在**核心定价函数**里生效。
+   * 放在 core 而不是 shop，是因为估值要走的地方全都走
+   * Core.computePrice —— 仓库估值、柜台议价底价、夜间失窃挑便宜的货、
+   * 拍卖配货比较、界面显示的参考价。品牌溢价必须**处处一致**，
+   * 放一处就够，也只需要改一处。
+   *
+   * 倍率表按「品牌名 → 倍率」写死。
+   * 品牌一共 15 个（BRANDS 里 5 个供应商 × 3 个），
+   * 所以表也是 15 行 —— 全部列出来，而不是写个「默认 1.0」。
+   * 写默认值就等于默认那一档没定价 ——
+   * 那正是这个缺陷当初能活下来的原因。
+   */
+  var BRAND_MULT={
+    /* 酿造 */
+    '铁砧牌':1.15,'黑砂窖藏':1.30,'旧港原酿':1.22,
+    /* 药厂 */
+    '白鹳':1.18,'灭菌星':1.32,'长明':1.24,
+    /* 烟行 */
+    '南岭红':1.12,'雾岛':1.26,'老烟枪':1.20,
+    /* 五金 */
+    '灰炉':1.16,'重铸会':1.28,'北脊':1.21,
+    /* 罐头厂 */
+    '铁皮':1.14,'军剩':1.30,'海湾':1.23
+  };
+  var BRAND_MULT_DEFAULT=1.0;
 
   /* ─── 物品目录 ─────────────────────────────────────────────────── */
   var ITEM_CATALOG={
@@ -499,13 +534,19 @@
    * puritySystem items: basePrice * purityMult * marketCoeff
    * alcohol with agedDays: applies aging bonus *(1+agedDays*0.01) capped at *3
    * standard items: basePrice * qualityMult * marketCoeff * genuineMult
+   * branded items (defect D19): multiply by the brand premium
    */
   function computePrice(market,item){
     var coeff=market.coefficients[item.category]||1.0;
+    /* 缺陷 D19：品牌溢价在这里生效。
+     * 无品牌、或品牌不在倍率表里 → 倍率 1.0，行为与修复前完全一致。
+     * 品牌货因此在**所有**估值口径下一致地更值钱：
+     * 仓库估值、柜台议价底价、夜间失窃挑选、拍卖配货比较、界面参考价。 */
+    var brandMult=brandMultiplier(item);
     if(item.puritySystem){
       var purity=item.purity!=null?item.purity:3;
       var purityMult=PURITY_MULT[purity]||1.0;
-      var base=item.basePrice*purityMult*coeff;
+      var base=item.basePrice*purityMult*coeff*brandMult;
       if(item.agedDays!=null&&item.agedDays>0){
         var ageMult=Math.min(3, 1+item.agedDays*0.01);
         base=base*ageMult;
@@ -514,7 +555,18 @@
     }
     var qualityMult=QUALITY_MULT[item.quality]||1.0;
     var genuineMult=item.genuine?1.0:0.35;
-    return Math.round(item.basePrice*qualityMult*coeff*genuineMult);
+    return Math.round(item.basePrice*qualityMult*coeff*genuineMult*brandMult);
+  }
+
+  /* 品牌倍率查询。单独一个函数，是为了让 computePrice 保持线性，
+   * 也让「这个品牌值多少钱」能被单独测。 */
+  function brandMultiplier(item){
+    if(!item)return BRAND_MULT_DEFAULT;
+    var b=item.brand;
+    if(!b||typeof b!=='string')return BRAND_MULT_DEFAULT;
+    var m=BRAND_MULT[b];
+    if(typeof m!=='number'||!isFinite(m)||m<=0)return BRAND_MULT_DEFAULT;
+    return m;
   }
 
   /* ─── 派遣系统 ─────────────────────────────────────────────────── */
@@ -1308,6 +1360,9 @@
     PURITY_MULT: PURITY_MULT,
     ORIGIN_NAMES: ORIGIN_NAMES,
     CATEGORY_NAMES: CATEGORY_NAMES,
+    BRAND_MULT: BRAND_MULT,
+    BRAND_MULT_DEFAULT: BRAND_MULT_DEFAULT,
+    brandMultiplier: brandMultiplier,
     categoryName: categoryName,
     createItem: createItem,
     createGrid: createGrid,

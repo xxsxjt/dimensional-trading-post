@@ -840,6 +840,12 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-contact-order__label b { display: block; font-size: 12px; color: #cfdde6; }
 .wl-contact-order__label small { display: block; margin-top: 2px; font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 .wl-contact-order .wl-btn { flex: 0 0 auto; }
+/* 缺陷 D20：在途订单区块 */
+.wl-contact-pending { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--wl-rule); border-radius: 5px; background: #101d28; }
+.wl-contact-pending__title { display: block; font-size: 10px; color: var(--wl-phosphor, #7ce7ef); font-variant-numeric: tabular-nums; }
+.wl-contact-pending__row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 5px; }
+.wl-contact-pending__row span { font-size: 11px; color: #cfdde6; }
+.wl-contact-pending__row small { flex: 0 0 auto; font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 
 .wl-facility-card { padding: 9px 11px; border: 1px solid var(--wl-rule); border-radius: 5px; background: #132330; }
 .wl-facility-card + .wl-facility-card { margin-top: 8px; }

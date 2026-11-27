@@ -248,6 +248,7 @@ const TEST_SUITES = [
   ['auction-week', 'tests/auction-week.cjs'],
   ['auction-reserve', 'tests/auction-reserve.cjs'],
   ['auction-ceiling', 'tests/auction-prize-ceiling.cjs'],
+  ['order-contract', 'tests/order-contract.cjs'],
   ['facility-purifier', 'tests/facility-purifier-filter.cjs'],
   ['facility-storage', 'tests/facility-storage-repack.cjs'],
   ['counter-demand', 'tests/counter-demand.cjs'],
@@ -1533,6 +1534,108 @@ ok('D17 拍卖上限回归文件存在',
   existsSync(resolve(root, 'tests/auction-prize-ceiling.cjs')));
 ok('D17 拍卖上限变异测试文件存在',
   existsSync(resolve(root, 'tests/auction-prize-ceiling-mutation.cjs')));
+
+/* ── 6b2. 人脉订购契约（缺陷 D18 / D19 / D20 / D21） ───────────────
+ *
+ * 这一组查的是「订购」这条线：钱和货在时间上分开，
+ * 所以账特别容易对不上。
+ *   D18 到货事件谎报去向 / 待领区把订购积压说成派遣归来
+ *   D19 品牌是死维度（注释说加价，实际零价差）
+ *   D20 在途订单在界面上完全不可见
+ *   D21 数量非整数时按 ceil 履约（付 1.5 件的钱拿 2 件）
+ */
+const d18ShopSrc = shopSrc;
+const d18UiSrc = ui;
+const d18CoreSrc = core;
+
+ok('D19 核心里必须有品牌倍率表',
+  /var\s+BRAND_MULT\s*=/.test(d18CoreSrc) && /BRAND_MULT_DEFAULT/.test(d18CoreSrc),
+  '没有倍率表，品牌溢价无从谈起');
+ok('D19 品牌表必须覆盖全部品牌（不能只写一个默认值）',
+  (() => {
+    const m = d18CoreSrc.match(/var\s+BRAND_MULT\s*=\s*\{([\s\S]{0,2000}?)\};/);
+    if (!m) return false;
+    const rows = (m[1].match(/'[^']+'\s*:\s*1\.\d+/g) || []).length;
+    return rows >= 15;
+  })(),
+  '品牌表少于 15 行 = 有一批品牌没有定价 = 默认那一档又变成死维度');
+ok('D19 核心定价必须吃品牌溢价',
+  /function\s+computePrice[\s\S]{0,900}?brandMultiplier\(item\)/.test(d18CoreSrc),
+  'computePrice 不读 brand = 品牌仍然是装饰');
+ok('D19 品牌查询必须是独立函数且导出',
+  /function\s+brandMultiplier/.test(d18CoreSrc) &&
+  /brandMultiplier:\s*brandMultiplier/.test(d18CoreSrc),
+  '倍率查询散在定价函数里就没法单独测');
+ok('D19 无品牌时倍率必须是 1（普通货不能被抬价）',
+  /function\s+brandMultiplier[\s\S]{0,600}?BRAND_MULT_DEFAULT/.test(d18CoreSrc),
+  '没品牌也加价 = 整个经济系统的基准被抬高');
+ok('D19 品牌必须按供应商+货号确定分配（随机会让面板价与扣款对不上）',
+  /function\s+_brandFor/.test(d18ShopSrc) &&
+  /_brandFor\(contactId,\s*skuId\)/.test(d18ShopSrc),
+  '品牌随机 = 面板显示的价与实际扣的钱不是一回事');
+ok('D19 面板报价必须算在将被交付的那个品牌上',
+  /_brandFor\(contact\.id,\s*skuId\)[\s\S]{0,400}?brand:\s*brand[\s\S]{0,400}?Core\.computePrice/.test(d18ShopSrc),
+  '面板报价算在无品牌价上 = 面板与到货不是同一件东西');
+ok('D19 面板必须把品牌与溢价写出来',
+  /entry\.brand/.test(d18UiSrc) && /品牌 \+/.test(d18UiSrc),
+  '行为对了但玩家认不出哪件是牌子货');
+ok('D19 物品详情必须显示品牌',
+  /\['品牌',\s*item\.brand\]/.test(d18UiSrc),
+  '品牌藏在数据里，玩家点开详情也看不到');
+ok('D19 来源 order 必须有中文名',
+  /order:'人脉订购'/.test(d18CoreSrc),
+  '详情面板会直接把英文 order 显示给玩家');
+ok('D19 到货的货必须带上品牌',
+  /Core\.createItem\(order\.skuId[\s\S]{0,200}?brand:\s*order\.brand/.test(d18ShopSrc),
+  '下单时抽了品牌，到货却没带上 = 品牌在履约环节丢了');
+
+ok('D18 到货事件必须如实区分入库与待领区',
+  /var\s+where\s*=\s*overflow\s*>\s*0/.test(d18ShopSrc) && /待领区/.test(d18ShopSrc),
+  '仓库满时事件还说「已入仓库」= 玩家去仓库找货，找不到');
+ok('D18 到货事件必须报出具体件数',
+  /入库\s*'\s*\+\s*stored/.test(d18ShopSrc) && /待领区\s*'\s*\+\s*overflow/.test(d18ShopSrc),
+  '只说「待领」不说几件，玩家还是不知道要腾多少地方');
+ok('D18 待领区必须按来源分组报数',
+  /counts\.order/.test(d18UiSrc) && /订购到货/.test(d18UiSrc) && /派遣归来/.test(d18UiSrc),
+  '把订购积压说成派遣归来，玩家找错了原因');
+ok('D18 派遣来源必须靠 dispatchId 区分',
+  /if\s*\(it\.dispatchId\)\s*counts\.salvage\+\+/.test(d18UiSrc),
+  '来源分错了 = 派遣带回来的货被算成订购积压');
+ok('D18 待领区不能写成「战利品 / 派遣归来」一种来源',
+  !/▶ 战利品/.test(d18UiSrc),
+  '待领区里混着两种来源，标题只能写一种就是错的');
+
+ok('D20 面板数据必须带上在途订单',
+  /pending:\s*pending/.test(d18ShopSrc) &&
+  /state\.orders[\s\S]{0,400}?contactId\s*===\s*contact\.id/.test(d18ShopSrc),
+  '在途单只在存档里，界面拿不到');
+ok('D20 人脉面板必须渲染在途区块',
+  /wl-contact-pending/.test(d18UiSrc) && /在途/.test(d18UiSrc),
+  '数据传到了但不画出来 = 玩家还是看不见');
+ok('D20 在途区块必须报出预付额与剩余天数',
+  /o\.paid/.test(d18UiSrc) && /o\.daysLeft/.test(d18UiSrc),
+  '只说「在途 1 笔」不够，玩家要知道钱去哪了、还有几天到');
+ok('D20 在途订单样式必须有',
+  /\.wl-contact-pending/.test(src('src/wasteland-shop.css')),
+  '渲染出来没样式 = 一堆没排版的字');
+
+ok('D21 订购数量必须归一成整数',
+  /function\s+_normalizeOrderQty/.test(d18ShopSrc) &&
+  /var\s+want\s*=\s*_normalizeOrderQty\(qty\)/.test(d18ShopSrc),
+  '数量不归一 = 预付 1.5 件的钱、到货 2 件');
+ok('D21 归一必须四舍五入（宁可多给不可少给）',
+  /function\s+_normalizeOrderQty[\s\S]{0,400}?Math\.round/.test(d18ShopSrc),
+  '截断会让玩家在交付时被悄悄砍掉半件');
+ok('D21 归一必须夹在 1~10',
+  /function\s+_normalizeOrderQty[\s\S]{0,600}?n\s*<\s*1[\s\S]{0,200}?n\s*>\s*10/.test(d18ShopSrc),
+  '数量必须落在合法区间里');
+ok('D21 履约必须按归一后的整数件数发货',
+  /for\s*\(\s*var\s+n\s*=\s*0;\s*n\s*<\s*order\.qty;\s*n\+\+\s*\)/.test(d18ShopSrc),
+  '履约循环必须读 order.qty，而不是别的数');
+ok('D21 订单回归文件存在',
+  existsSync(resolve(root, 'tests/order-contract.cjs')));
+ok('D21 订单变异测试文件存在',
+  existsSync(resolve(root, 'tests/order-contract-mutation.cjs')));
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

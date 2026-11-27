@@ -512,8 +512,14 @@
         def.items.forEach(function (entry) {
           var row = el('div', {class:'wl-contact-order'});
           var label = el('div', {class:'wl-contact-order__label'});
-          label.appendChild(el('b', {}, esc(entry.name)));
-          label.appendChild(el('small', {}, '预付 \u00A4' + entry.unitCost + ' / 件 · 市价 \u00A4' + entry.listPrice));
+          /* 缺陷 D19：品牌要摆在货名旁边，并标出溢价。
+           * 品牌货比同款普通货值钱，玩家得能一眼认出、也能算清差价。 */
+          label.appendChild(el('b', {}, esc((entry.brand ? entry.brand + ' ' : '') + entry.name)));
+          var sub = '预付 \u00A4' + entry.unitCost + ' / 件 · 市价 \u00A4' + entry.listPrice;
+          if (entry.brand && entry.brandPremium > 1) {
+            sub += ' · 品牌 +' + Math.round((entry.brandPremium - 1) * 100) + '%';
+          }
+          label.appendChild(el('small', {}, sub));
           row.appendChild(label);
           // 注意：不能写成 disabled: true/false —— el() 走 setAttribute，
           // 传入 null 会落成字符串 "null"，而只要该属性存在按钮就是禁用的。
@@ -525,6 +531,28 @@
           card.appendChild(row);
         });
       }
+      /* 缺陷 D20：在途订单要看得见。
+       *
+       * 订购是预付：钱当场扣掉了，货还在路上。
+       * 以前这条记录只在存档里，界面上一无所见 ——
+       * 玩家看余额少了，却不知道少了多少、订的是什么、还有几天到。
+       * 现在在对应的人脉卡片下列出在途单。 */
+      if (contact.unlocked && def && def.pending && def.pending.length) {
+        var pendBox = el('div', {class:'wl-contact-pending'});
+        pendBox.appendChild(el('small', {class:'wl-contact-pending__title'},
+          '在途 ' + def.pending.length + ' 笔 · 已预付 \u00A4' +
+          def.pending.reduce(function (sum, o) { return sum + (o.paid || 0); }, 0)));
+        def.pending.forEach(function (o) {
+          var prow = el('div', {class:'wl-contact-pending__row'});
+          prow.appendChild(el('span', {},
+            esc((o.brand ? o.brand + ' ' : '') + o.name + ' ×' + o.qty)));
+          prow.appendChild(el('small', {},
+            '预付 \u00A4' + o.paid + ' · 还有 ' + o.daysLeft + ' 天到货'));
+          pendBox.appendChild(prow);
+        });
+        card.appendChild(pendBox);
+      }
+
       container.appendChild(card);
     });
   }
@@ -646,6 +674,12 @@
       item.expiry  != null ? ['保质期',   item.expiry + ' 天'] : null,
       item.origin  != null ? ['来源',     coreName('ORIGIN_NAMES', item.origin) || item.origin] : null,
       item.agedDays != null ? ['陈年天数', item.agedDays + ' 天'] : null,
+      /* 缺陷 D19：品牌必须看得见，还要看得出它值多少溢价。
+       * 以前品牌只是数据里的一个字段，详情面板里连一行都没有 ——
+       * 玩家挑品牌货、认出品牌货，全靠货名里那两个字。 */
+      item.brand  != null && item.brand ? ['品牌', item.brand] : null,
+      item.brandPremium != null && item.brandPremium > 1
+        ? ['品牌溢价', '+' + Math.round((item.brandPremium - 1) * 100) + '%'] : null,
     ].filter(Boolean);
 
     if (attrs.length) {
@@ -723,12 +757,31 @@
 
     container.appendChild(el('span', {
       style: 'font-size:10px;color:' + MUTED + ';letter-spacing:.1em;',
-    }, '▶ 战利品'));
+    }, '▶ 待领区'));
 
     if (!items.length) {
-      container.appendChild(el('p', { style: 'color:' + MUTED + ';font-size:12px;margin:4px 0;' }, '暂无战利品'));
+      container.appendChild(el('p', { style: 'color:' + MUTED + ';font-size:12px;margin:4px 0;' }, '暂无待领物资'));
       return;
     }
+
+    /* 缺陷 D18：待领区混着两种来源，标题必须分开报数。
+     *   salvage = 派遣带回的；order = 订购到货、仓库放不下而积压的。
+     * 以前这里统一写「战利品 / 派遣归来」——
+     * 玩家等着人脉订购的货，看到的却是「派遣归来」，找错了原因。 */
+    var counts = { salvage: 0, order: 0, other: 0 };
+    items.forEach(function (it) {
+      if (!it) return;
+      if (it.dispatchId) counts.salvage++;
+      else if (it.origin === 'order') counts.order++;
+      else counts.other++;
+    });
+    var titleBits = ['共 ' + items.length + ' 件'];
+    if (counts.salvage) titleBits.push('派遣归来 ' + counts.salvage + ' 件');
+    if (counts.order)   titleBits.push('订购到货 ' + counts.order + ' 件');
+    if (counts.other)   titleBits.push('其它 ' + counts.other + ' 件');
+    container.appendChild(el('p', {
+      style: 'color:' + PHOSPHOR + ';font-size:11px;margin:0;font-weight:700;',
+    }, '🎁 ' + titleBits.join(' · ')));
 
     var list = el('div', { style: 'display:flex;flex-direction:column;gap:4px;' });
     items.forEach(function (loot) {
@@ -739,9 +792,16 @@
       });
       row.appendChild(iconNode(loot.icon, conf.icon, 'wl-loot-icon'));
       var info = el('div', { style: 'flex:1;min-width:0;' });
-      info.appendChild(el('b', { style: 'display:block;font-size:12px;color:' + PHOSPHOR + ';' }, esc(loot.name || conf.label)));
-      info.appendChild(el('span', { style: 'font-size:10px;color:' + MUTED + ';' },
-        conf.label + (loot.qty > 1 ? ' ×' + loot.qty : '')));
+      /* 缺陷 D19：品牌要看得见。
+       * 品牌货比同款普通货值钱，玩家得能一眼认出哪件是牌子货。 */
+      info.appendChild(el('b', { style: 'display:block;font-size:12px;color:' + PHOSPHOR + ';' },
+        esc((loot.brand ? loot.brand + ' ' : '') + (loot.name || conf.label))));
+      var sub = conf.label + (loot.qty > 1 ? ' ×' + loot.qty : '');
+      /* 品牌溢价一并标出来：品牌货转手更值钱，这是订它的理由。 */
+      if (loot.brand && loot.brandPremium > 1) {
+        sub += ' · 品牌 +' + Math.round((loot.brandPremium - 1) * 100) + '%';
+      }
+      info.appendChild(el('span', { style: 'font-size:10px;color:' + MUTED + ';' }, sub));
       row.appendChild(info);
       if (qLvl) {
         var dotWrap = el('span', { style: 'display:flex;gap:2px;align-items:center;' });

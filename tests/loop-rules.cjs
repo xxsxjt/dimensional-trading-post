@@ -211,9 +211,17 @@ function emptyGrid(live) {
 /* ══ 二、在途订单不能被判成破产 ═════════════════════════════ */
 {
   let s = createSession(undefined, makeRnd(0x102));
-  /* 预付一单，让金币归零 */
+  /* 预付一单，让金币归零
+   *
+   * 余额不能写死成 64 —— 缺陷 D19 之后，最便宜的那档货
+   * 带上品牌溢价，预付价会高于原来的 64，写死就会连单都下不成
+   * （测的就不是「在途订单不被判破产」，而是「能不能下单」）。
+   *
+   * 所以这里先拿到报价，再按报价倒推余额：
+   * 余额 = 最便宜那笔的预付价 + 一点余量，
+   * 目的是让「钱花光」这个状态真的发生，而不是靠猜一个数字。 */
   s = rewrite(s, live => {
-    live.gold = 64;
+    live.gold = 5000;
     live.activeView = 'base';
     live.contacts = (live.contacts || []).map(c => (c.unlocked = true, c));
   });
@@ -226,10 +234,16 @@ function emptyGrid(live) {
   assert.ok(entry && entry.items.length, 'an unlocked contact must have purchasable stock');
   const cheap = entry.items.slice().sort((a, b) => a.unitCost - b.unitCost)[0];
 
+  /* 余额 = 这笔预付价 + 1：下单之后钱正好归零，
+   * 走的是「刚好买得起 → 花光」这条最紧的路径。 */
+  const purse = cheap.unitCost + 1;
+  s = rewrite(s, live => { live.gold = purse; });
+  s.window.WastelandShop.enter();
+  st = s.state();
   s.callbacks.contacts.cb.onOrder(contact.id, cheap.skuId, 1);
   st = s.state();
   assert.equal((st.orders || []).length, 1, 'the order must be recorded');
-  assert.equal(st.gold, 64 - cheap.unitCost, 'the order must be prepaid');
+  assert.equal(st.gold, purse - cheap.unitCost, 'the order must be prepaid');
 
   /* 把仓库清空（货都卖光了），订单还在路上 */
   s = rewrite(s, live => { emptyGrid(live); });
