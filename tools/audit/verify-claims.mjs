@@ -236,6 +236,7 @@ const TEST_SUITES = [
   ['world-switch', 'tests/world-switch-rules.cjs'],
   ['machine-world', 'tests/machine-world-rules.cjs'],
   ['machine-zone', 'tests/machine-zone-lifecycle.cjs'],
+  ['save-migration', 'tests/save-migration.cjs'],
   ['dispatch', 'tests/dispatch-rules.cjs'],
   ['dispatch-rare-gate', 'tests/dispatch-rare-gate.cjs'],
   ['dispatch-econ', 'tests/dispatch-econ.cjs'],
@@ -303,6 +304,7 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/world-switch-rules.cjs', 8],
   ['tests/machine-world-rules.cjs', 8],
   ['tests/machine-zone-lifecycle.cjs', 10],
+  ['tests/save-migration.cjs', 14],
   ['tests/dispatch-rules.cjs', 26],
   ['tests/dispatch-rare-gate.cjs', 17],
   ['tests/dispatch-econ.cjs', 21],
@@ -1383,6 +1385,86 @@ ok('D14 界面必须给出升级按钮',
 ok('D14 机器定义必须写明回收价与升级价',
   /scrapValue\s*:/.test(d14CoreSrc) && /upgradeCost\s*:/.test(d14CoreSrc),
   '每台机器都得有拆解回收价与两级升级价');
+
+/* 6b-16. 缺陷 D15：存档必须读得进来（grid / market 是两个基石）
+ *
+ * 读档流程只给「后加的字段」补默认值（dispatches、orders……），
+ * 唯独两个基石从来没被当成必需品：
+ *   · 存档里没有 market → computePrice 崩在 'reading coefficients'，
+ *     玩家点开价格面板就白屏；
+ *   · 存档里没有 grid → _applyStorageCapacity 崩在 'reading items'。
+ * 而这不是理论脏档 —— localStorage 里那串 JSON 被截断过一次、
+ * 被别的版本覆盖过一次、或者手改过，就会命中。
+ * 玩家看到的是「我明明有存档，怎么一进游戏就白了屏」。
+ *
+ * 还有机器区的老格式：renderBaseView 兼容了 Array.isArray(freeGrid)
+ * 和 baseState.facilities，但商店侧只认 {items:{}} ——
+ * 老存档里的机器画得出来，账上却没有：zoneUsed 算成 0、
+ * zoneCells 算成 NaN、买机器时算不出可用格位。
+ */
+ok('D15 读档必须迁移仓库 grid（缺 grid 的存档不能崩）',
+  /function\s+_migrateGrid/.test(d14ShopSrc) &&
+  /_migrateGrid\s*\(\s*\)/.test(d14ShopSrc),
+  'grid 缺失时 _applyStorageCapacity 崩在 reading items，玩家直接白屏');
+ok('D15 读档必须迁移行情 market（缺 market 的存档不能崩）',
+  /function\s+_migrateMarket/.test(d14ShopSrc) &&
+  /_migrateMarket\s*\(\s*\)/.test(d14ShopSrc),
+  'market 缺失时 computePrice 崩在 reading coefficients，价格面板直接白屏');
+ok('D15 迁移必须在所有字段兜底之前执行',
+  /_migrateGrid\s*\(\s*\)[\s\S]{0,120}?_migrateMarket\s*\(\s*\)[\s\S]{0,400}?if\s*\(!state\.dispatches\)/.test(d14ShopSrc),
+  '先兜底后迁移，迁移还是会崩在同一个地方');
+ok('D15 机器区也必须迁移（老格式的机器不能从账上消失）',
+  /function\s+_migrateMachineZone/.test(d14ShopSrc) &&
+  /_migrateMachineZone\s*\(\s*\)/.test(d14ShopSrc),
+  'freeGrid 曾经是数组、机器曾经挂在 facilities 上 —— 不迁移就丢机器');
+ok('D15 机器区迁移必须捡起老格式的机器',
+  /function\s+_migrateMachineZone[\s\S]{0,2600}?_collect\(Array\.isArray\(grid\)/.test(d14ShopSrc) &&
+  /function\s+_migrateMachineZone[\s\S]{0,2600}?facilities/.test(d14ShopSrc),
+  '数组格式和 facilities 格式的机器都得搬回来');
+ok('D15 机器区结构判定必须校验 items 是对象',
+  /function\s+_machineZoneIntact[\s\S]{0,900}?Array\.isArray\(grid\.items\)/.test(d14ShopSrc),
+  'items 要是数组或 null，格位账目整个失准');
+ok('D15 缺 w/h 的机器必须补上尺寸（格位账目不能算错）',
+  /function\s+_migrateMachineZone[\s\S]{0,3200}?it\.w\s*=\s*1|function\s+_migrateMachineZone[\s\S]{0,3200}?machine\.w\s*=\s*1/.test(d14ShopSrc),
+  '老档的机器常常没写 w/h，缺了就按一格算');
+ok('D15 坏掉的机器区必须重建（不能带着坏结构继续跑）',
+  /function\s+_machineZone[\s\S]{0,900}?_machineZoneIntact/.test(d14ShopSrc),
+  '坏网格会让机器买不进去、格位算不准');
+ok('D15 旧 bug 留下的高系数必须被校正',
+  /function\s+_migrateMarket[\s\S]{0,3000}?stale/.test(d14ShopSrc),
+  '旧存档的系数永久停在 2.7，读进来必须归位到基准');
+ok('D15 正在断供的品类不能被当成残留归位',
+  /function\s+_migrateMarket[\s\S]{0,3000}?stockout\[cat\]\s*>\s*0/.test(d14ShopSrc),
+  '断供期系数钉在 3.0，那是活的当前状态，归位就变成自相矛盾的行情');
+ok('D15 存档迁移回归文件存在',
+  existsSync(resolve(root, 'tests/save-migration.cjs')));
+ok('D15 存档迁移变异测试文件存在',
+  existsSync(resolve(root, 'tests/save-migration-mutation.cjs')));
+
+/* 6b-17. 缺陷 D16：断供期间的基线不能被钉成 3.0
+ *
+ * 断供把系数钉在 3.0（设计意图：断供就暴涨）。
+ * 但 _newShock 在「基线还没定」时直接拿当前系数当基线 ——
+ * 断供中新建冲击，于是基线 = 3.0，冲击到期后系数停在高位，
+ * 而断供结束又被这个 3.0 覆盖 → **涨价永久化**。
+ *
+ * 实测：旧存档（没有 baselines 表）+ 断供中 + 期间新建冲击，
+ * 10 天后系数仍停在 3.000，baselines.water = 3 —— 永不回落。
+ *
+ * 不变式：没有生效冲击也没有断供时，系数必须精确等于 1.0。
+ */
+ok('D16 基线不能取断供期被钉住的当前系数',
+  /function\s+_newShock[\s\S]{0,1400}?stockoutBaselines/.test(d14CoreSrc),
+  '基线取当前系数 = 取 3.0 = 涨价永久化');
+ok('D16 断供中且没记住基线时必须回默认基线',
+  /function\s+_newShock[\s\S]{0,1600}?stockout\[cat\]\s*>\s*0\)\s*base\s*=\s*1\.0/.test(d14CoreSrc),
+  '宁可基线偏一点，也不能把 3.0 焊死成永久状态');
+ok('D16 断供结束时基线必须从基线表兜底',
+  /baselines\[cat\]\s*=\s*base/.test(d14CoreSrc),
+  '拿当前系数兜底 = 把断供期的 3.0 焊成永久基线');
+ok('D16 断供必须记住自己的基线',
+  /stockoutBaselines/.test(d14CoreSrc) && /so2\[cat\]\s*=\s*b0/.test(d14CoreSrc),
+  '断供不记基线，到期就还原不回去');
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

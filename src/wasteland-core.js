@@ -1077,12 +1077,32 @@
       function _newShock(cat, delta, duration){
         var base=baselines[cat];
         if(typeof base!=='number' || !isFinite(base)){
-          var current=market.coefficients[cat];
-          if(typeof current!=='number' || !isFinite(current)) current=1.0;
-          // 同品类可能已经有别的冲击在生效，当前系数里含着它们的 delta，
-          // 基线要减掉才是真正的起点。
-          base=current-_liveDelta(cat, null);
-          if(typeof base!=='number' || !isFinite(base)) base=1.0;
+          /* 缺陷 D16：断供期间该品类的系数被**钉在 3.0**（断供就暴涨，是设计意图）。
+           * 以前这里直接拿「当前系数」当基线，于是断供中新建的冲击
+           * 会把基线定成 3.0 —— 冲击到期后系数停在 3.0，
+           * 而断供一结束基线就被这个 3.0 覆盖，**涨价永久化**。
+           *
+           * 实测：旧存档（没有 baselines 表）+ 断供中 + 期间新建冲击，
+           * 10 天后系数仍停在 3.000，baselines.water = 3 —— 永不回落。
+           *
+           * 修法：断供期间的基线**必须**从 stockoutBaselines 里取
+           * （断供开始的那一刻记下的），而不是从被钉住的当前系数里取。
+           * 连那份都没有（旧档）就回默认基线 1.0 ——
+           * 宁可基线偏一点，也不能把 3.0 焊死成永久状态。 */
+          var so=market.stockoutBaselines;
+          if(market.stockout && market.stockout[cat]>0 &&
+             so && typeof so[cat]==='number' && isFinite(so[cat])){
+            base=so[cat];
+          } else {
+            var current=market.coefficients[cat];
+            if(typeof current!=='number' || !isFinite(current)) current=1.0;
+            // 同品类可能已经有别的冲击在生效，当前系数里含着它们的 delta，
+            // 基线要减掉才是真正的起点。
+            base=current-_liveDelta(cat, null);
+            if(typeof base!=='number' || !isFinite(base)) base=1.0;
+            // 断供中却没记住基线：宁可回默认基线，也不拿 3.0 当基线。
+            if(market.stockout && market.stockout[cat]>0) base=1.0;
+          }
           baselines[cat]=base;
         }
         return {category:cat, delta:delta, duration:duration, base:base};

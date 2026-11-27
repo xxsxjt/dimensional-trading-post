@@ -825,6 +825,171 @@
     return {zombie: zombie, dupes: dupes};
   }
 
+  /* ── 存档迁移：仓库（缺陷 D15） ─────────────────────────────
+   *
+   * 仓库是整个游戏的基石：货在这里堆着、在这里被卖掉。
+   * 以前的读档流程**从来没给 grid 补过兜底**，
+   * 于是存档里 grid 缺失或结构不对时：
+   *   · grid 整个没了 → _applyStorageCapacity 崩在 'reading items'，
+   *     玩家一进游戏就白屏，整个存档报废；
+   *   · grid.items 是 null → _machinesOnFloor 的 Object.keys 崩；
+   *   · grid.cells 长度跟 cols×rows 对不上 → 放货逻辑整个失准。
+   *
+   * 修法：读档时把仓库**重建成一个结构一定正确的空仓库**。
+   * 这里刻意**不尝试抢救货物** —— 结构都坏成这样的存档，
+   * 货物坐标已经无从校验；宁可给玩家一个干净的开局，
+   * 也不能给一个「看起来能玩、但数据在暗处错乱」的仓库。
+   * 原本完好的存档走的是另一条路（下面 _migrateGrid 的第一步就原样保留）。 */
+  function _migrateGrid() {
+    var g = state.grid;
+    var fallbackRows = _storageRows();
+    var fallbackCols = 10;
+
+    /* 第一步：结构完好的存档原样保留。
+     * 判定标准：cols/rows 是正整数、cells 是数组且长度正好是 cols×rows、
+     * items 是对象。少一样都不算完好。 */
+    var intact = g && typeof g === 'object' &&
+      Number.isFinite(g.cols) && g.cols > 0 &&
+      Number.isFinite(g.rows) && g.rows > 0 &&
+      Array.isArray(g.cells) && g.cells.length === g.cols * g.rows &&
+      g.items && typeof g.items === 'object' && !Array.isArray(g.items);
+
+    if (!intact) {
+      var lost = 0;
+      if (g && g.items && typeof g.items === 'object') {
+        lost = Object.keys(g.items).length;
+      }
+      state.grid = Core.createGrid(fallbackCols, fallbackRows);
+      if (lost > 0 && state.todayEvents) {
+        state.todayEvents.push(_makeEvent('storage_reset', '仓库结构损坏，已重置',
+          '存档里的仓库数据不完整（' + lost + ' 件货无法校验），已换成一口空仓库。'));
+      }
+      return;
+    }
+
+    /* 第二步：结构完好，但个别条目可能是坏的（老档 / 手改档）。
+     * 修掉尺寸异常的条目 —— 尺寸缺了的话，格位账目就算不准。 */
+    var repaired = 0;
+    Object.keys(g.items).forEach(function (id) {
+      var entry = g.items[id];
+      if (!entry || !entry.item) { delete g.items[id]; repaired++; return; }
+      var it = entry.item;
+      if (!Number.isFinite(it.w) || it.w < 1) it.w = 1;
+      if (!Number.isFinite(it.h) || it.h < 1) it.h = 1;
+    });
+    if (repaired && state.todayEvents) {
+      state.todayEvents.push(_makeEvent('storage_repair', '仓库清理了一遍',
+        '清掉了 ' + repaired + ' 条损坏的货物记录。'));
+    }
+  }
+
+  /* ── 存档迁移：行情（缺陷 D15） ─────────────────────────────
+   *
+   * 行情是另一个基石：所有估值、报价、参考价都从 market.coefficients 读。
+   * 存档里 market 缺失时，computePrice 直接崩：
+   *   'Cannot read properties of undefined (reading coefficients)'
+   * 而且崩在**渲染价格面板**里 —— 也就是玩家点开「价格」面板就白屏。
+   *
+   * 修法：缺就补一份全新的行情状态。
+   * 补的时候不能只补空对象 —— 系数表和断供表必须**品类齐全**，
+   * 否则新读进来的存档里某些品类算不出价格（系数 undefined → 回落 1.0，
+   * 看起来没崩，但那个品类的行情从此再也不动）。
+   *
+   * 另外顺手修一件事：**旧存档的系数污染**。
+   * 修复前的旧实现会把断供过期的品类永久停在 2.7，
+   * 这样的存档读进来之后 baselines 表是空的、系数却停在高位 ——
+   * 于是新代码把那个高位当成「基线」，物价永远回不去（实测 30 天仍是 2.7）。
+   *
+   * 怎么区分「玩家 legitimately 处的系数」和「旧 bug 留下的残留」？
+   * 关键在 baselines 表：**新代码写的存档一定有一张 baselines 表**，
+   * 里面记着每个品类的真基线。旧存档没有这张表 —— 那它的系数就不可信。
+   * 所以：没有 baselines 表、却有非 1.0 的系数 → 判定为旧 bug 残留，系数归 1.0。
+   * 有 baselines 表 → 系数是当前状态（有冲击在生效就是高的），一个都不动。 */
+  function _migrateMarket() {
+    var m = state.market;
+    if (!m || typeof m !== 'object') {
+      state.market = Core.createMarketState();
+      return;
+    }
+    if (!m.coefficients || typeof m.coefficients !== 'object' || Array.isArray(m.coefficients)) {
+      m.coefficients = {};
+    }
+    if (!m.stockout || typeof m.stockout !== 'object' || Array.isArray(m.stockout)) {
+      m.stockout = {};
+    }
+    if (!m.baselines || typeof m.baselines !== 'object' || Array.isArray(m.baselines)) {
+      m.baselines = {};
+    }
+    if (!m.stockoutBaselines || typeof m.stockoutBaselines !== 'object' || Array.isArray(m.stockoutBaselines)) {
+      m.stockoutBaselines = {};
+    }
+    if (!Array.isArray(m.pendingShocks)) m.pendingShocks = [];
+
+    /* 品类表以 createMarketState 为准 —— 那是代码里声明的「行情追踪哪些品类」。 */
+    var fresh = Core.createMarketState();
+    var cats = Object.keys(fresh.coefficients);
+
+    /* 旧 bug 残留判定：没有 baselines 表，却有系数不是 1.0。
+     * 有 baselines 表的存档，系数是**当前**状态（有冲击在生效就偏高），
+     * 一个都不能动；没有 baselines 表的存档，系数只可能是旧 bug 留下的残渣。
+     *
+     * 但有一条例外：**正在断供**的品类。
+     * 断供期间系数被钉在 3.0（设计意图：断供就暴涨），
+     * 而断供是**临时状态**，不是残留 —— 供应一恢复它就该回到基线。
+     * 所以正在断供的品类不能被判成「残留」，
+     * 否则这里把它的系数归 1.0，等于把「断供中」显示成「断供结束」，
+     * 而断供计数还在走 —— 玩家看到的是一个自相矛盾的行情。
+     *
+     * 这一条正是变异测试 M8 逼出来的：没有它，
+     * 「断供中新建冲击」这条路的基线会被迁移层提前改写，
+     * 于是基线永远取不到 3.0，缺陷反而被掩盖。 */
+    var hasBaselineTable = Object.keys(m.baselines).length > 0 ||
+                          Object.keys(m.stockoutBaselines).length > 0 ||
+                          m.pendingShocks.length > 0;
+    var stale = false;
+    if (!hasBaselineTable) {
+      cats.forEach(function (cat) {
+        var c = m.coefficients[cat];
+        if (typeof c !== 'number' || !isFinite(c)) return;
+        if (Math.abs(c - 1) <= 1e-9) return;
+        /* 正在断供 → 3.0 是设计意图，不是残留。 */
+        if (m.stockout[cat] > 0) return;
+        stale = true;
+      });
+      if (stale) {
+        cats.forEach(function (cat) {
+          /* 正在断供的品类保持 3.0 —— 它的值是活的，不是残渣。 */
+          if (m.stockout[cat] > 0) return;
+          m.coefficients[cat] = 1.0;
+        });
+        m.baselines = {};
+        m.stockoutBaselines = {};
+        m.pendingShocks = [];
+        if (state.todayEvents) {
+          state.todayEvents.push(_makeEvent('market_reset', '行情基线已校正',
+            '存档里的行情系数是旧版留下的残留（永久停在高位），已全部归位到基准。'));
+        }
+      }
+    }
+
+    /* 补齐品类：系数表与断供表必须和代码声明的品类表一致。
+     * 少一个品类，那个品类的行情就永远算不出正确的价格。 */
+    cats.forEach(function (cat) {
+      if (typeof m.coefficients[cat] !== 'number' || !isFinite(m.coefficients[cat])) {
+        m.coefficients[cat] = 1.0;
+      }
+      if (!Number.isFinite(m.stockout[cat]) || m.stockout[cat] < 0) {
+        m.stockout[cat] = 0;
+      }
+    });
+    /* 多出来的品类（代码已经不追踪了）留着自己的值也无妨，
+     * 但断供计数必须归零 —— 不然它会永远「在断供」。 */
+    Object.keys(m.stockout).forEach(function (cat) {
+      if (cats.indexOf(cat) === -1) m.stockout[cat] = 0;
+    });
+    if (!Number.isFinite(m.day)) m.day = state.day || 0;
+  }
+
   // 按等级把仓库补到应有的排数；幂等，读档时也会调用以修复旧存档。
   //
   // 缺陷 D12：这里以前是**扫 cells 数组**来收集要搬的货：
@@ -1399,9 +1564,125 @@
 
   function _machineZone() {
     if (!state.baseState) return null;
-    if (!state.baseState.freeGrid) state.baseState.freeGrid = Core.createGrid(4, _machineZoneRows());
+    var grid = state.baseState.freeGrid;
+    /* 缺陷 D15：机器区也必须先确认结构正确。
+     * 旧格式（数组）、items 是 null、cells 长度对不上 ——
+     * 这些都会在 _machinesOnFloor 的 Object.keys(grid.items) 上崩，
+     * 或者让格位账目整个失准。
+     * 一律重建：机器区重建 = 机器丢了（玩家会知道），
+     * 但崩溃 = 整个基地页面开不了（玩家连机器区都看不到）。 */
+    if (!_machineZoneIntact(grid)) {
+      state.baseState.freeGrid = Core.createGrid(4, _machineZoneRows());
+      grid = state.baseState.freeGrid;
+    }
     _applyMachineZoneCapacity();
-    return state.baseState.freeGrid;
+    return grid;
+  }
+
+  /* 机器区的结构是不是好的。
+   * 判定：是个对象、cols/rows 是正整数、cells 是数组且长度正好、
+   * items 是**对象**（不是数组、不是 null）。 */
+  function _machineZoneIntact(grid) {
+    if (!grid || typeof grid !== 'object' || Array.isArray(grid)) return false;
+    if (!Number.isFinite(grid.cols) || grid.cols <= 0) return false;
+    if (!Number.isFinite(grid.rows) || grid.rows <= 0) return false;
+    if (!Array.isArray(grid.cells) || grid.cells.length !== grid.cols * grid.rows) return false;
+    if (!grid.items || typeof grid.items !== 'object' || Array.isArray(grid.items)) return false;
+    return true;
+  }
+
+  /* ── 存档迁移：机器区（缺陷 D15） ─────────────────────────────
+   *
+   * 机器区在 UI 层有两种「老格式」的痕迹：
+   *   · `Array.isArray(s.freeGrid)` —— 自由格曾经是个**数组**；
+   *   · `s.facilities` —— 更老的一版，机器直接挂在 baseState.facilities 上。
+   * 界面（renderBaseView）对这两种都做了兼容，
+   * 但**商店侧（_machinesOnFloor）只认 `{items:{}}` 这一种**。
+   *
+   * 结果：老存档里的机器**在界面上画得出来、却不在商店侧的账上** ——
+   * 机器面板显示 0 台在架，`zoneUsed` 算成 0，`zoneCells` 算成 NaN，
+   * 而且玩家买机器时机器区算不出可用格位（canPlace 在坏网格上返回 false）。
+   * 机器**从账上消失了**：它还在那儿，但游戏当它不存在。
+   *
+   * 修法：读档时把老格式的机器**搬进新网格**。
+   * 这一步必须做，不能只是「重建空网格」——
+   * 那是把玩家的产线静默删掉，比格式不兼容更糟。 */
+  function _migrateMachineZone() {
+    if (!state.baseState) {
+      state.baseState = {
+        fixedSlots: {
+          power:          { installed: false, level: 0, fuel: 0 },
+          security:       { installed: false, level: 0 },
+          water_purifier: { installed: false, level: 0 },
+          storage:        { installed: false, level: 0 }
+        },
+        timers:     { filter: 12, theft: 0 },
+        freeGrid:   Core.createGrid(4, _machineZoneRows()),
+        facilities: []
+      };
+      return;
+    }
+    var grid = state.baseState.freeGrid;
+    if (_machineZoneIntact(grid)) {
+      /* 结构完好：把尺寸缺失的机器修好（尺寸缺了格位账目就不准），
+       * 并补上缺失的 level / world 字段。 */
+      Object.keys(grid.items).forEach(function (id) {
+        var entry = grid.items[id];
+        if (!entry || !entry.item) { delete grid.items[id]; return; }
+        var it = entry.item;
+        if (!Number.isFinite(it.w) || it.w < 1) it.w = 1;
+        if (!Number.isFinite(it.h) || it.h < 1) it.h = 1;
+        if (!Number.isFinite(it.level) || it.level < 1) it.level = 1;
+      });
+      return;
+    }
+
+    /* 结构不完好：把散落在各处的机器收集起来，搬进一个新网格。 */
+    var salvaged = [];
+    function _collect(list) {
+      if (!Array.isArray(list)) return;
+      list.forEach(function (raw) {
+        if (!raw) return;
+        /* 老格式有两种形状：{item,x,y} 或者就是机器本身。 */
+        var machine = (raw.item && typeof raw.item === 'object') ? raw.item : raw;
+        if (!machine || typeof machine !== 'object') return;
+        if (!machine.machineKey) return;
+        salvaged.push(machine);
+      });
+    }
+    _collect(Array.isArray(grid) ? grid : null);
+    _collect(Array.isArray(state.baseState.facilities) ? state.baseState.facilities : null);
+    if (grid && !Array.isArray(grid) && grid.items && typeof grid.items === 'object') {
+      Object.keys(grid.items).forEach(function (id) {
+        var entry = grid.items[id];
+        if (entry && entry.item) _collect([entry]);
+      });
+    }
+
+    var newGrid = Core.createGrid(4, _machineZoneRows());
+    var placed = 0, lost = 0;
+    salvaged.forEach(function (machine) {
+      if (!Number.isFinite(machine.w) || machine.w < 1) machine.w = 1;
+      if (!Number.isFinite(machine.h) || machine.h < 1) machine.h = 1;
+      if (!Number.isFinite(machine.level) || machine.level < 1) machine.level = 1;
+      var ok = false;
+      for (var r = 0; r < newGrid.rows && !ok; r++) {
+        for (var c = 0; c < newGrid.cols && !ok; c++) {
+          if (Core.canPlace(newGrid, machine, c, r)) {
+            Core.place(newGrid, machine, c, r);
+            ok = true;
+          }
+        }
+      }
+      if (ok) placed++;
+      else lost++;
+    });
+    state.baseState.freeGrid = newGrid;
+    state.baseState.facilities = [];
+    if (salvaged.length && state.todayEvents) {
+      state.todayEvents.push(_makeEvent('machine_zone_migrate', '机器区已重新整理',
+        '把 ' + placed + ' 台机器搬回了机器区' + (lost ? '，' + lost + ' 台放不下暂时搁置' : '') + '。'));
+    }
   }
 
   /* 机器区容量对齐到当前仓储等级。幂等：容量没变时什么都不做。
@@ -1414,6 +1695,9 @@
   function _applyMachineZoneCapacity() {
     var grid = state.baseState && state.baseState.freeGrid;
     if (!grid) return false;
+    if (!Number.isFinite(grid.cols) || grid.cols <= 0) return false;
+    if (!Number.isFinite(grid.rows) || grid.rows <= 0) return false;
+    if (!grid.items || typeof grid.items !== 'object' || Array.isArray(grid.items)) return false;
     var targetRows = _machineZoneRows();
     if (!targetRows || targetRows <= grid.rows) return false;
     var oldItems = [];
@@ -1447,7 +1731,7 @@
   }
   function _machinesOnFloor() {
     var grid = _machineZone();
-    if (!grid) return [];
+    if (!grid || !grid.items) return [];
     return Object.keys(grid.items).map(function (id) {
       var entry = grid.items[id];
       return entry && entry.item ? entry.item : null;
@@ -1456,7 +1740,7 @@
 
   function _machineById(machineId) {
     var grid = _machineZone();
-    if (!grid) return null;
+    if (!grid || !grid.items) return null;
     var entry = grid.items[machineId];
     return entry && entry.item ? entry.item : null;
   }
@@ -3882,6 +4166,26 @@
     try { saved = Core.loadGame(); } catch (e) { saved = null; }
     state = saved || createInitialState();
 
+    /* 缺陷 D15：存档迁移必须在**所有**字段兜底**之前**先把两个基石补上。
+     *
+     * grid 与 market 是整个游戏的两个支柱：仓库装货，行情定价。
+     * 以前的读档流程只给「后加的字段」补默认值（dispatches、orders……），
+     * 唯独这两个**从来没有被当成必需品**：
+     *   · 存档里没有 market → computePrice(state.market, item) 直接崩
+     *     （'Cannot read properties of undefined (reading coefficients)'），
+     *     玩家连开市都开不了，整个存档报废；
+     *   · 存档里没有 grid → _applyStorageCapacity 崩在
+     *     'Cannot read properties of undefined (reading items)'。
+     *
+     * 这不是「理论上的脏档」：localStorage 里那串 JSON 只要被截断过一次、
+     * 被别的版本覆盖过一次、或者手动改过，就会命中。
+     * 玩家面对的是「我明明有存档，怎么一进游戏就白了屏」。
+     *
+     * 修法：先补 grid 和 market 的**结构性骨架**，
+     * 再做其余字段的兜底。宁可丢一个空仓库，也绝不能开不了档。 */
+    _migrateGrid();
+    _migrateMarket();
+
     // 存档兼容：补全新增字段
     if (!state.dispatches)      state.dispatches      = [];
     if (!state.returnedLoot)    state.returnedLoot    = [];
@@ -3891,8 +4195,9 @@
     if (!Array.isArray(state.orders))   state.orders   = [];
     if (!Array.isArray(state.contacts)) state.contacts = defaultContacts();
     if (!Array.isArray(state.todayNPCs)) state.todayNPCs = [];
-    // 行情：断供基线表是后加的字段，旧档没有就补一份空的。
-    // 少了它，断供到期时找不到基线，品类会永远停在 2.7。
+    /* 行情：断供基线表是后加的字段，旧档没有就补一份空的。
+     * 少了它，断供到期时找不到基线，品类会永远停在 2.7。
+     * （结构性兜底已经在 _migrateMarket 里做过了，这里只补剩下的细节。） */
     if (state.market) {
       if (!state.market.stockoutBaselines || typeof state.market.stockoutBaselines !== 'object') {
         state.market.stockoutBaselines = {};
@@ -3990,7 +4295,10 @@
     if (!state.baseState.timers) state.baseState.timers = { filter: 12, theft: 0 };
     if (!Number.isFinite(state.baseState.timers.filter)) state.baseState.timers.filter = 12;
     if (!Number.isFinite(state.baseState.timers.theft))   state.baseState.timers.theft = 0;
-    if (!state.baseState.freeGrid) state.baseState.freeGrid = Core.createGrid(4, 3);
+    /* 缺陷 D15：机器区迁移必须在 _applyStorageCapacity 之前做 ——
+     * 仓储等级决定机器区该有几行，先把老格式的机器搬进来，
+     * 后面 _machineZone 的扩容才有正确的起点。 */
+    _migrateMachineZone();
     // 仓储等级可能高于当前格数（旧存档或手工改档），读档时补足
     _applyStorageCapacity();
     // 仓库完整性修复（缺陷 D12 的存量存档修复）
