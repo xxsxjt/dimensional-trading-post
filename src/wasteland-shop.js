@@ -382,7 +382,9 @@
       var item;
       try {
         item = Core.createItem(offer.skuId, {
-          quality: offer.quality, genuine: offer.genuine, origin: 'visitor'
+          quality: offer.quality, genuine: offer.genuine, origin: 'visitor',
+          /* 缺陷 D32：供货方要记下来 —— 谁给的货，详情面板里看得到。 */
+          supplier: npc.name
         });
       } catch (e) { break; }
       if (!_placeInWarehouse(item)) { noSpace = true; break; }
@@ -590,7 +592,9 @@
       for (var n = 0; n < order.qty; n++) {
         var item;
         try {
-          item = Core.createItem(order.skuId, { quality: 3, genuine: true, origin: 'order', brand: order.brand });
+          item = Core.createItem(order.skuId, { quality: 3, genuine: true, origin: 'order', brand: order.brand,
+            /* 缺陷 D32：人脉订购的货记下供货方。 */
+            supplier: order.contact });
         } catch (e) { break; }
         if (!_placeInWarehouse(item)) {
           if (!state.returnedLoot) state.returnedLoot = [];
@@ -1455,8 +1459,22 @@
         var victim = state.grid.items[victimId] && state.grid.items[victimId].item;
         if (victim) {
           Core.remove(state.grid, victimId);
+          /* 缺陷 D33：timers.theft 以前是**死维度**。
+           *
+           * 它在初始状态里被初始化成 0、在迁移里被兜底成 0，
+           * 但整份代码里**没有任何一处**给它加过数，也**没有任何一处**读过它。
+           * 于是它永远停在 0 —— 一个看着像计数器、实际恒为常量的字段。
+           *
+           * 现在它真的有意义：累计失窃次数。
+           * 玩家在基地面板能看见「被偷过几次」，
+           * 这条数字也让「安保等级到底有没有用」变得可验证 ——
+           * 升一级安保，失窃次数就该少下去。
+           */
+          if (!state.baseState.timers) state.baseState.timers = { filter: 12, theft: 0 };
+          state.baseState.timers.theft = (state.baseState.timers.theft || 0) + 1;
           state.todayEvents.push(_makeEvent('theft', '夜间失窃',
-            '有人摸进了仓库，' + victim.name + '不见了。安保等级可以压低这种事。'));
+            '有人摸进了仓库，' + victim.name + '不见了。这是第 ' +
+            state.baseState.timers.theft + ' 次失窃，安保等级可以压低这种事。'));
         }
       }
     }
@@ -2049,17 +2067,49 @@
       state.todayEvents.push(_makeEvent(out.failed ? 'produce_bad' : 'produce_done',
         (recipe ? recipe.label : '生产') + (out.failed ? '：炼制失败' : '：出货'),
         out.failed
-          ? '这一炉废了，只得到 ' + stored + ' 件副产物。' + (recipe && recipe.failChance > 0.3 ? '（高难度配方本来就不稳）' : '')
+          ? '这一炉废了，只得到 ' + stored + ' 件副产物。' +
+            (overflow ? '另有 ' + overflow + ' 件仓库放不下，已转到待领区。' : '') +
+            (recipe && recipe.failChance > 0.3 ? '（高难度配方本来就不稳）' : '')
           : '入库 ' + stored + ' 件成品。' + (overflow ? '仓库放不下，' + overflow + ' 件转到待领区。' : '')));
     });
     state.production = still;
   }
 
-  // 一天里断电了多久；给界面显示用
+  /* 产线停摆原因（缺陷 D31）。
+   *
+   * 以前这个函数写在这里，注释还写着「给界面显示用」——
+   * 但**整个代码库里没有任何一处调用它**，界面也从来没显示过。
+   * 于是玩家看到的只有一句笼统的「⚠ 断电：机器停工，批次原地等待」，
+   * 分不清是「整个产线都在等电」还是「只有某几台在等」，
+   * 更看不到「这批到底停在哪」。
+   *
+   * 现在它真的被接进机器区面板：面板要显示
+   *   · 有几批在跑、几批停着
+   *   · 停着的原因是断电还是别的
+   *   · 停着的批次还剩几天
+   * 玩家才知道「断了电」和「这台机器上有活」是两回事。 */
   function _productionIdleReason() {
     if (!(state.production || []).length) return '';
     if (!_powerOnline()) return '断电停工中';
     return '';
+  }
+
+  /* 产线现状的摘要，喂给界面。 */
+  function _productionStatus() {
+    var jobs = state.production || [];
+    var idleReason = _productionIdleReason();
+    var running = 0, parked = 0;
+    jobs.forEach(function (job) {
+      if (!job) return;
+      if (!idleReason) running++; else parked++;
+    });
+    return {
+      total:   jobs.length,
+      running: running,
+      parked:  parked,
+      idleReason: idleReason,
+      powerOnline: _powerOnline()
+    };
   }
 
   // ── 初始游戏状态 ──────────────────────────────────────────
@@ -2103,7 +2153,6 @@
         freeGrid:   Core.createGrid(4, 3),
         facilities: []
       },
-      prices: {},
       counterState: {
         npcId:    null,
         npc:      null,
@@ -2114,6 +2163,11 @@
       },
       todayNPCs:   [],
       todayEvents: [],
+      // 近 30 天的记事档案（缺陷 D29）。
+      // 以前这个字段谁都没初始化过，core 里那句 `if(state.log){...}`
+      // 于是永远不进 —— 整个档案功能是关闭的。
+      // 现在由商店在「结束今天」这一步归档，那才是真正的一天边界。
+      log:         [],
       auction:     null,
       activeView:  'shop',
       orders:      [],
@@ -2145,6 +2199,21 @@
       // 装备、违禁品这两个品类除了他没有别的稳定来源。
       bringCategories: ['misc', 'water', 'food', 'material', 'equipment', 'illegal', 'survival', 'tool'],
       bringCount: [2, 4], sellFactor: [0.86, 0.96],
+      /* 缺陷 D34：attitude 是这个角色的**成交态度基线**。
+       * 以前每个 NPC 对象上都挂着一个 attitude: 1.0，
+       * 而它是**每个 NPC 各自一份**的 —— 柜台公式用的是
+       * counterState.attitude（每次接待时随机滚的 0.9~1.1），
+       * npc.attitude 从头到尾**没有任何一处读过**。
+       * 于是它是一个恒为 1.0 的死字段：看着像「这个商旅今天心情多��」，
+       * 实际上对出价没有任何影响。
+       *
+       * 现在它有定义了：角色的基线态度参与柜台出价的滚动区间。
+       *   · 拾荒者急着出手 → 0.96（略低）
+       *   · 藏家惜售、对陈年货慷慨 → 1.06
+       *   · 情报贩子根本不出价 → 1.0
+       * 柜台的 attitude = 基线 × 当日心情（0.95~1.05）。
+       * 现在换一个人上台，出价基数真的会不一样。 */
+      attitude: 0.96,
       premium: 1.00, intel: false, bulk: false
     },
     {
@@ -2153,6 +2222,7 @@
       // 化学品（机油、溶剂、甘油）走行商——他本来就在贩工业耗材
       bringCategories: ['material', 'tech', 'tobacco', 'chemical', 'industrial'],
       bringCount: [1, 3], sellFactor: [0.98, 1.08],
+      attitude: 1.00,
       premium: 1.20, intel: false, bulk: false
     },
     {
@@ -2160,6 +2230,7 @@
       budgetRange: [150, 400], wantCategories: ['medicine', 'water', 'food', 'chemical'],
       bringCategories: ['medicine'],
       bringCount: [1, 3], sellFactor: [0.95, 1.05],
+      attitude: 1.02,
       premium: 1.30, intel: false, bulk: false
     },
     {
@@ -2169,6 +2240,7 @@
       bringCategories: ['material', 'equipment', 'repair', 'digging'],
       bringCount: [1, 3], sellFactor: [0.94, 1.04],
       excludeCategories: ['medicine', 'tech'],
+      attitude: 0.98,
       premium: 1.10, intel: false, bulk: true
     },
     /* ══ 灵霄宗门界 ════════════════════════════════════════ */
@@ -2178,6 +2250,7 @@
       // 采药人是灵草的唯一稳定来源——丹炉的上游全靠他
       bringCategories: ['herb', 'seed', 'farming'],
       bringCount: [2, 4], sellFactor: [0.88, 1.00],
+      attitude: 0.97,
       premium: 1.10, intel: false, bulk: false
     },
     {
@@ -2186,6 +2259,7 @@
       // 他带成品丹药来卖，也高价收原料——玩家可以低价收原料转手给他
       bringCategories: ['pill', 'ore', 'essence'],
       bringCount: [1, 3], sellFactor: [1.00, 1.12],
+      attitude: 1.03,
       premium: 1.35, intel: false, bulk: false
     },
     {
@@ -2193,6 +2267,7 @@
       budgetRange: [300, 700], wantCategories: ['medicine', 'equipment', 'alcohol', 'material'],
       bringCategories: ['crystal', 'core', 'xianxia'],
       bringCount: [1, 2], sellFactor: [0.96, 1.06],
+      attitude: 1.04,
       premium: 1.45, intel: false, bulk: false
     },
     {
@@ -2200,6 +2275,7 @@
       budgetRange: [200, 500], wantCategories: ['alcohol', 'tobacco', 'misc', 'pill'],
       bringCategories: ['alcohol'],
       bringCount: [1, 2], sellFactor: [0.96, 1.06],
+      attitude: 1.06,
       premium: 1.40, intel: false, bulk: false, wantAged: true
     },
     /* ══ 中立 ══════════════════════════════════════════════ */
@@ -2208,7 +2284,7 @@
       budgetRange: [0, 0],     wantCategories: [],
       bringCategories: [],
       bringCount: [0, 0], sellFactor: [1, 1],
-      premium: 1.00, intel: true,  bulk: false
+      attitude: 1.00, premium: 1.00, intel: true,  bulk: false
     }
   ];
 
@@ -2279,7 +2355,9 @@
         budget:     budget,
         wants:      wants,
         premium:    conf.premium,
-        attitude:   1.0,
+        /* 缺陷 D34：这个字段现在真的有用了 ——
+         * 它是角色自己的成交态度基线，柜台 attitude 会在它上面滚动。 */
+        attitude:   Number.isFinite(conf.attitude) ? conf.attitude : 1.0,
         // 标签体系：evaluateTrade 的「工具鉴定」分支靠 npc.tags 判定。
         // 之前这里没给 tags，整条工具分支是死的。
         tags:       dailyTags.tags,
@@ -2416,10 +2494,16 @@
   }
 
   // ── 将所有柜台物品归还仓库 ───────────────────────────────
+  // 返回结算摘要：returned = 成功退回仓库的件数，stranded = 仓库放不下、
+  // 仍然留在柜台上的件数（缺陷 D27）。调用方要靠这两个数如实汇报，
+  // 不能一律说「货物已退入仓库」——仓库满时货根本没退回去。
   function _returnCounterItems() {
     var cs = state.counterState;
+    var returned = 0, stranded = 0;
     for (var i = 0; i < cs.slots.length; i++) {
-      if (cs.slots[i]) _returnSlotItem(i);
+      if (!cs.slots[i]) continue;
+      if (_returnSlotItem(i)) returned++;
+      else stranded++;
     }
     cs.phase    = 'idle';
     cs.npcId    = null;
@@ -2430,6 +2514,7 @@
     cs.bulkMet       = false;
     cs.excludedCount = 0;
     cs.wantRatio     = 1.0;
+    return {returned: returned, stranded: stranded};
   }
 
   // ── handleCounterReturn：从槽位取回物品到仓库 ────────────
@@ -2742,7 +2827,20 @@
     state.counterState.npc      = npc;
     state.counterState.phase    = 'active';
     state.counterState.offer    = null;
-    state.counterState.attitude = 0.9 + Math.random() * 0.2; // 0.9–1.1
+    /* 缺陷 D34：柜台态度 = 角色基线 × 当日心情。
+     *
+     * 以前这里是 `0.9 + Math.random() * 0.2`（0.9~1.1）——
+     * 每个商旅都一样，跟他是谁无关。
+     * 现在先取这个角色自己的基线（npc.attitude），
+     * 再在上面滚一层当天的随机心情（0.95~1.05）：
+     *   拾荒者（基线 0.96）整体偏低，藏家（基线 1.06）整体偏高。
+     *
+     * 关键：这个值必须留在 [0.5, 2] 以内 —— 出价公式里有它，
+     * 基线 × 心情如果跑飞，预算封顶前就能算出离谱的价。
+     */
+    var baseline = Number.isFinite(npc.attitude) ? npc.attitude : 1.0;
+    var mood = 0.95 + Math.random() * 0.10; // 0.95–1.05
+    state.counterState.attitude = Math.max(0.5, Math.min(2, baseline * mood));
     // 新商旅上台，需求进度重置（缺陷 D13）。
     state.counterState.demands       = [];
     state.counterState.bulkMet       = false;
@@ -3409,11 +3507,25 @@
     // 它们既不在仓库里（玩家看不到、卖不掉），
     // 也不在柜台的结算范围里（被当成不存在）。
     // 现在的写法是无条件归还：槽位里有就退，没就什么都不做。
-    _returnCounterItems();
+    // 缺陷 D27：_returnCounterItems 现在会报出退货结果，
+    // 仓库满时货其实还留在柜台上，不能再一律说「货物已退入仓库」。
+    var returned = _returnCounterItems();
     if (openDeal) {
-      state.todayEvents.push(_makeEvent('deal_abandoned', '这笔生意留到明天',
-        '结算时' + (openNpc && openNpc.name ? openNpc.name : '商旅') +
-        '的洽谈还没谈成，货物已退入仓库。'));
+      var dealText;
+      if (returned.stranded > 0) {
+        // 仓库放不下 —— 货还在柜台上，如实说。
+        dealText = '结算时' + (openNpc && openNpc.name ? openNpc.name : '商旅') +
+          '的洽谈还没谈成。' + returned.returned +
+          ' 件货已退入仓库，还有 ' + returned.stranded +
+          ' 件仓库放不下，仍留在柜台上，先腾出空位再取回。';
+      } else if (returned.returned > 0) {
+        dealText = '结算时' + (openNpc && openNpc.name ? openNpc.name : '商旅') +
+          '的洽谈还没谈成，' + returned.returned + ' 件货已退入仓库。';
+      } else {
+        dealText = '结算时' + (openNpc && openNpc.name ? openNpc.name : '商旅') +
+          '的洽谈还没谈成，柜台上没有货物。';
+      }
+      state.todayEvents.push(_makeEvent('deal_abandoned', '这笔生意留到明天', dealText));
     }
 
     // 延迟反馈：队列就是 fbPending 本身（存档里存的是同一个数组），
@@ -3429,6 +3541,28 @@
 
     // 1. Core.advanceDay
     var result = Core.advanceDay(state);
+    /* 1a. 记事归档（缺陷 D29）
+     *
+     * 一天结束、第二天开始 —— 这是唯一真正的「一天边界」。
+     * 今天发生的事（成交、订单到货、派遣归来、生产、失窃、行情）
+     * 全部落在 todayEvents 里，这一刻它才完整。
+     *
+     * 以前这段归档写在 core.advanceDay 里，但它：
+     *   ① 从来没进过（state.log 没被初始化过）；
+     *   ② 就算进过也是错的 —— core 在 day++ **之前**被调用，
+     *      记下的 day 是**旧的一天**，而它产出的事件属于**新一天**。
+     *
+     * 现在挪到这里：归档的那一天，就是玩家刚玩完的那一天。 */
+    var archivedDay = state.day;
+    if (!Array.isArray(state.log)) state.log = [];
+    state.log.push({
+      day:     archivedDay,
+      events:  (state.todayEvents || []).map(function (ev) {
+        return { type: ev.type, label: ev.label, desc: ev.desc, hour: ev.hour };
+      }),
+      warnings: (result.warnings || []).slice()
+    });
+    if (state.log.length > 30) state.log = state.log.slice(-30);
     // 1b. 体力恢复：睡一觉，人就缓过来一些
     var staminaBefore = _stamina();
     _recoverStamina();
@@ -3875,13 +4009,19 @@
           /* 玩家领先时那笔成交价是冻结的，要告诉玩家他能花多少。 */
           escrow: _escrowHeld(),
           /* 缺陷 D17：本档出价上限（奖池最高货值）—— 界面必须写出来。 */
-          bidCap: _auctionBidCap(auc)
+          bidCap: _auctionBidCap(auc),
+          /* 缺陷 D35：上一局的收场结果。
+           * 拍卖对象会被下一周的新局顶掉，玩家（和测试）都没法再看它一眼。
+           * 快照已经在 state.lastAuctionResult 里记着，界面却从来没显示过。 */
+          lastResult: state.lastAuctionResult || null
         }, { onBid: playerBid });
       } else if (auc && auc.done) {
         if (aucWrap) aucWrap.style.display = '';
         UI.renderAuction(aucEl, {
           containerName: auc.containerName, tier: auc.tier, clues: auc.clues,
-          currentBid: auc.currentBid, ended: true, won: auc.playerWon
+          currentBid: auc.currentBid, ended: true, won: auc.playerWon,
+          /* 缺陷 D35：这一局就是「上一局」，快照就是它自己的收场。 */
+          lastResult: state.lastAuctionResult || null
         }, { onBid: playerBid });
       } else {
         if (aucWrap) aucWrap.style.display = 'none';
@@ -3910,7 +4050,7 @@
 
     // 今日记事（情报、拍卖、延迟反馈、成交）
     var logEl = document.getElementById('wl-events');
-    if (logEl && UI.renderEventLog) UI.renderEventLog(logEl, state.todayEvents || []);
+    if (logEl && UI.renderEventLog) UI.renderEventLog(logEl, state.todayEvents || [], state.log || []);
 
     // 行情 ticker
     var tickerEl   = document.getElementById('wl-ticker');
@@ -4017,7 +4157,12 @@
         status:     statusMap,
         gold:       state.gold,
         fuelSkus:   FUEL_SKUS,
-        fuelStock:  fuelStock
+        fuelStock:  fuelStock,
+        /* 缺陷 D33：累计失窃次数要看得见。
+         * 以前 timers.theft 恒为 0，玩家没法判断安保升级有没有用。 */
+        theftCount: (state.baseState && state.baseState.timers &&
+                     Number.isFinite(state.baseState.timers.theft))
+          ? state.baseState.timers.theft : 0
       });
     } else {
       _renderBaseFallback(baseEl, state.baseState);
@@ -4141,6 +4286,14 @@
         foreignLabel: foreign
           ? (machineWorld === 'xianxia_sect' ? '灵霄宗门界' : '核爆废土') + '的手艺，本界开不了工'
           : '',
+        /* 缺陷 D31：这台机器现在能不能开工。
+         * 以前 _machineCanRun 算出来了却没人用，界面上「开工」按钮的
+         * 禁用条件是界面自己重算的（!m.running && d.powerOnline && craftable[rid]），
+         * 跟商店这边的判断各算各的 —— 两边一旦不同步，
+         * 玩家就会看到「按钮能点，点了却被拒」。
+         * 现在由商店给出权威判断，界面直接用。 */
+        canRun:    _machineCanRun(machine),
+        busy:      !!job,
         running:    job ? { recipeId: job.recipeId, daysLeft: job.daysLeft, totalDays: job.totalDays } : null
       };
     });
@@ -4171,7 +4324,11 @@
       zoneCells:   zoneCols * zoneRows,
       zoneUsed:    usedCells,
       zoneFree:    Math.max(0, zoneCols * zoneRows - usedCells),
-      zoneCanGrow: _machineZoneRows() > zoneRows
+      zoneCanGrow: _machineZoneRows() > zoneRows,
+      /* 缺陷 D31：产线停摆原因与批次分布。
+       * 以前界面上只有一句「⚠ 断电」，玩家分不清
+       * 「整条产线都在等电」和「只有某几批在等」。 */
+      production:  _productionStatus()
     };
   }
 
@@ -4479,10 +4636,15 @@
     if (!state.returnedLoot)    state.returnedLoot    = [];
     if (!state.activeView)      state.activeView      = 'shop';
     if (!state._counterItems)   state._counterItems   = {};
-    if (!state.prices)          state.prices          = {};
+    /* 缺陷 D30：老存档里那个空的 prices 表直接丢掉。
+     * 它从来没被写、也从没被读，行情的真值只有 state.market。 */
+    if (state.prices) delete state.prices;
     if (!Array.isArray(state.orders))   state.orders   = [];
     if (!Array.isArray(state.contacts)) state.contacts = defaultContacts();
     if (!Array.isArray(state.todayNPCs)) state.todayNPCs = [];
+    /* 记事档案（缺陷 D29）：旧存档没有 log 字段，补一份空数组，
+     * 否则第一次归档就会炸。 */
+    if (!Array.isArray(state.log)) state.log = [];
     /* 行情：断供基线表是后加的字段，旧档没有就补一份空的。
      * 少了它，断供到期时找不到基线，品类会永远停在 2.7。
      * （结构性兜底已经在 _migrateMarket 里做过了，这里只补剩下的细节。） */

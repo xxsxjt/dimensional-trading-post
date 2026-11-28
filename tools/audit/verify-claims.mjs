@@ -258,6 +258,7 @@ const TEST_SUITES = [
   ['fuzz', 'tests/fuzz.cjs'],
   ['build', 'tests/build-retention.cjs'],
   ['build-orphan', 'tests/build-orphan-salvage.cjs'],
+  ['settlement-reporting', 'tests/settlement-reporting.cjs'],
 ];
 const suiteRuns = TEST_SUITES.map(([name, rel]) => {
   const r = spawnSync(process.execPath, [resolve(root, rel)], {cwd: root, encoding: 'utf8'});
@@ -383,7 +384,13 @@ ok('L1 破产判定把柜台上的货算作收入', /counterState[\s\S]{0,120}?s
 ok('L2 停业不再清空在途订单', !/state\.orders\s*=\s*\[\]/.test(
   (() => { const i = shop.indexOf('function _checkInsolvent'); return i >= 0 ? stripComments(shop.slice(i, i + 2200)) : ''; })()
 ));
-ok('L3 结算时无条件归还柜台货物', /state\.todayEvents\s*=\s*\[\];[\s\S]{0,600}?\n\s*_returnCounterItems\(\);/.test(shopCode));
+ok('L3 结算时无条件归还柜台货物', (() => {
+  const i = shop.indexOf('function endDay');
+  if (i < 0) return false;
+  const body = stripComments(shop.slice(i, i + 2600));
+  return /_returnCounterItems\(\)/.test(body) &&
+         !/if\s*\([^)]*counterState\.npcId[^)]*\)\s*_returnCounterItems/.test(body);
+})());
 ok('L3 结算不再按 npcId 有条件归还', !/if\s*\(state\.counterState\.npcId\)\s*_returnCounterItems\(\);/.test(
   (() => { const i = shop.indexOf('function endDay'); return i >= 0 ? stripComments(shop.slice(i, i + 2600)) : ''; })()
 ));
@@ -1760,6 +1767,229 @@ ok('D25 未提交的待领货必须原样保留',
 ok('D25 保留清单必须按 id 判重',
   /submittedIds/.test(d24Body) && /if\s*\(it\.id\)\s*return\s*!submittedIds\[it\.id\]/.test(d24Body),
   '按对象判重 = 同一件货的副本被当成两件货');
+
+/* 6z. 缺陷 D27–D35：结算如实化 + 死维度接电
+ *
+ * 这一轮把整份代码里「被算出来 / 被初始化 / 被记下来，但没人读」的字段逐个查了一遍，
+ * 列出 9 个：2 个是汇报不实（D27 / D28），7 个是死维度（D29–D35）。
+ *
+ * 这里做源码级断言，把每一条修复钉住 ——
+ * 变异测试会证明这些断言**抓得住**对应的回退，
+ * 这里证明的是「它们现在确实在源码里」。 */
+const shopSrc27 = src('src/wasteland-shop.js');
+const uiSrc27   = src('src/wasteland-ui.js');
+const coreSrc27 = src('src/wasteland-core.js');
+
+/* ── D27 结算汇报 ─────────────────────────────────────── */
+const retIdx = shopSrc27.indexOf('function _returnCounterItems');
+ok('D27 _returnCounterItems 必须存在', retIdx >= 0, '柜台退货函数不见了');
+if (retIdx >= 0) {
+  const fn = shopSrc27.slice(retIdx, retIdx + 900);
+  ok('D27 _returnCounterItems 必须报出滞留件数',
+    /stranded/.test(fn) && /return\s*\{\s*returned:\s*returned\s*,\s*stranded:\s*stranded\s*\}/.test(fn),
+    '不报 stranded = 结算只能说「全退进去了」');
+  ok('D27 退不回去的货必须计入 stranded',
+    /else\s+stranded\+\+/.test(fn),
+    '退不回的货被算进 returned = 汇报继续说谎');
+}
+const endDayIdx = shopSrc27.indexOf('function endDay');
+ok('D27 endDay 必须存在', endDayIdx >= 0, '一天结算入口不见了');
+if (endDayIdx >= 0) {
+  const fn = shopSrc27.slice(endDayIdx, endDayIdx + 3000);
+  ok('D27 结算必须区分滞留与退回',
+    /returned\.stranded\s*>\s*0/.test(fn) && /returned\.returned\s*>\s*0/.test(fn),
+    '不区分 = 仓库满时也报「已退入仓库」');
+  ok('D27 滞留时必须明说货还在柜台上',
+    /留在柜台上/.test(fn),
+    '仓库满时必须如实说货还压在柜台上');
+  ok('D27 空柜台必须单独报（不留「已退入 0 件」）',
+    /柜台上没有货物/.test(fn),
+    '柜台上本来没货时不能顺着「已退入仓库」那一句说');
+}
+
+/* ── D28 副产物溢出报数 ───────────────────────────────── */
+const prodIdx = shopSrc27.indexOf("'produce_bad'");
+ok('D28 produce_bad 事件必须存在', prodIdx >= 0, '炼制失败的事件类型不见了');
+if (prodIdx >= 0) {
+  const callEnd = shopSrc27.indexOf(')));', prodIdx);
+  const call = shopSrc27.slice(prodIdx, callEnd);
+  const bad = call.slice(call.indexOf("? '这一炉废了"), call.indexOf(": '入库"));
+  const okb = call.slice(call.indexOf(": '入库"));
+  ok('D28 失败文案必须报溢出件数',
+    /overflow/.test(bad), '副产物溢出了却不报数 = 玩家以为货丢了');
+  ok('D28 失败文案必须报溢出去向',
+    /待领区/.test(bad), '不报去向 = 玩家不知道货在哪');
+  ok('D28 成功文案必须用同一套口径',
+    /overflow/.test(okb) && /待领区/.test(okb),
+    '成功与失败两套口径 = 改一处忘一处');
+}
+
+/* ── D29 state.log 归档 ───────────────────────────────── */
+const initIdx = shopSrc27.indexOf('function createInitialState');
+ok('D29 createInitialState 必须存在', initIdx >= 0, '初始状态函数不见了');
+if (initIdx >= 0) {
+  const chunk = shopSrc27.slice(initIdx, initIdx + 4000);
+  const m = chunk.match(/\blog:\s*(\[[^\]]*\]|undefined|null)/);
+  ok('D29 初始状态里的 log 必须是数组',
+    !!m && /^\[/.test(m[1]),
+    'log 不是数组 = 归档分支永远不进 = 整个档案功能关闭');
+}
+ok('D29 迁移必须兜底 log 数组',
+  (() => {
+    const anchor = shopSrc27.indexOf('delete state.prices');
+    if (anchor < 0) return false;
+    const chunk = shopSrc27.slice(Math.max(0, anchor - 8000), anchor + 2000);
+    return /state\.log\s*=\s*\[\]/.test(chunk);
+  })(),
+  '旧存档没有 log 字段 = 第一次归档就炸');
+const logPushIdx = shopSrc27.indexOf('state.log.push(');
+ok('D29 归档必须真的执行', logPushIdx >= 0, '没有任何地方往 log 里写');
+if (logPushIdx >= 0) {
+  const endDayChunk = shopSrc27.slice(endDayIdx, endDayIdx + 3000);
+  ok('D29 归档必须发生在商店的一天边界上（不是 core.advanceDay 里）',
+    endDayChunk.includes('state.log.push('),
+    '归档挪回 advanceDay = 记的是旧的一天，而事件属于新一天');
+  ok('D29 归档必须限定在最近 30 天',
+    /state\.log\.length\s*>\s*30\)/.test(shopSrc27),
+    '不截断 = 存档会无限膨胀');
+}
+ok('D29 core 里那段死归档必须已经删掉',
+  !/state\.log\.push\(/.test(coreSrc27.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+  'core 里那段归档永远不进 = 一段永远走不到的死代码');
+ok('D29 记事面板必须接到档案数据',
+  /UI\.renderEventLog\(logEl,\s*state\.todayEvents\s*\|\|\s*\[\],\s*state\.log\s*\|\|\s*\[\]\)/.test(shopSrc27),
+  '档案没传给界面 = 记了 30 天玩家一行也看不到');
+ok('D29 界面必须画出历史档案',
+  /wl-event-archive/.test(uiSrc27), '档案摘要那一块不见了');
+ok('D29 界面必须显示档案的告警条数',
+  /条告警/.test(uiSrc27), '档案只数事件不数告警 = 玩家看不到风险');
+
+/* ── D29-b wantRatio 进度条 ───────────────────────────── */
+ok('D29 wantRatio 必须被界面读出来',
+  /Number\.isFinite\(s\.wantRatio\)/.test(uiSrc27),
+  '达成率算了没人读 = 玩家只能逐条数');
+ok('D29 柜台面板必须有进度条',
+  /wl-counter-meter/.test(uiSrc27) && /aria-valuenow/.test(uiSrc27),
+  '进度条没有 = 达成率还是一个看不见的数');
+
+/* ── D30 死维度 state.prices ─────────────────────────── */
+ok('D30 初始状态里不能再有 prices',
+  !/^\s*prices:\s*\{\}/m.test(shopSrc27), 'prices 又被初始化回来了');
+ok('D30 迁移必须把 prices 丢掉',
+  /if\s*\(state\.prices\)\s*delete\s+state\.prices/.test(shopSrc27),
+  '不删 = 死维度继续占着存档');
+{
+  const uiCode = uiSrc27.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok('D30 行情板不许再读 prices',
+    !/s\.prices/.test(uiCode), '行情板还在读那张空表 = 一层永远走不到的回退');
+  ok('D30 行情板不许再有 legacy 回退',
+    !/legacy/.test(uiCode), 'legacy 永远是 {} = 纯死代码，却让人误以为兼容老存档');
+  ok('D30 行情板必须按 market.coefficients 渲染',
+    /s\.coefficients\s*&&\s*s\.coefficients\[cat\.key\]/.test(uiCode),
+    '行情板的真值只能是 state.market');
+}
+
+/* ── D31 机器区权威 canRun ────────────────────────────── */
+ok('D31 _machineCanRun 必须存在',
+  shopSrc27.includes('function _machineCanRun'), '权威判断函数不见了');
+ok('D31 机器区数据必须带上 canRun',
+  /canRun:\s*_machineCanRun\(machine\)/.test(shopSrc27),
+  '不传 canRun = 界面只能自己重算');
+ok('D31 机器区数据必须带上产线摘要',
+  /production:\s*_productionStatus\(\)/.test(shopSrc27),
+  '不传 production = 玩家分不清「整条产线等电」和「某几批在等」');
+ok('D31 界面必须用商店给的 canRun',
+  /m\.canRun/.test(uiSrc27), '界面不读 canRun = 两边各算各的');
+{
+  const uiCode = uiSrc27.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const idx = uiCode.indexOf('m.canRun !== undefined');
+  ok('D31 界面必须优先用权威 canRun',
+    idx >= 0 && /!!m\.canRun/.test(uiCode.slice(idx, idx + 200)),
+    '权威值不在主路径上 = 界面还是自己说了算');
+  ok('D31 界面必须说出不能开工的原因',
+    /这台机器上还有一批活没做完/.test(uiSrc27) && /断电，机器停工/.test(uiSrc27),
+    '按钮灰着但不说原因 = 玩家无从下手');
+}
+
+/* ── D32 supplier / notes ─────────────────────────────── */
+ok('D32 货必须带 supplier 字段',
+  /supplier:\s*overrides\.supplier\s*\|\|\s*sku\.supplier\s*\|\|\s*null/.test(coreSrc27),
+  '不落 supplier = 货没有来源');
+ok('D32 货必须带 notes 字段',
+  /notes:\s*overrides\.notes\s*\|\|\s*''/.test(coreSrc27),
+  '不落 notes = 备注永远写不进去');
+ok('D32 上门商旅的货必须记供货方',
+  /supplier:\s*npc\.name/.test(shopSrc27), '商旅给的货不记来源');
+ok('D32 人脉订购的货必须记供货方',
+  /supplier:\s*order\.contact/.test(shopSrc27), '订购的货不记来源');
+ok('D32 详情面板必须显示供货方',
+  /供货方/.test(uiSrc27), '记了却看不见 = 还是死维度');
+ok('D32 详情面板必须用那套已经写好的 notes 样式',
+  /wl-detail__notes/.test(uiSrc27), 'CSS 早就是为它写的，界面却从来没有这一块');
+
+/* ── D33 timers.theft ─────────────────────────────────── */
+ok('D33 失窃时必须累计计数',
+  /state\.baseState\.timers\.theft\s*=\s*\([^)]*\)\s*\+\s*1/.test(shopSrc27),
+  '没人加过数 = 一个看着像计数器、实际恒为常量的字段');
+ok('D33 失窃事件必须报出累计数',
+  /第\s*'?\s*\+\s*state\.baseState\.timers\.theft/.test(shopSrc27) ||
+  /次失窃/.test(shopSrc27),
+  '不报累计 = 玩家数不出自己被偷过几次');
+ok('D33 基地面板必须拿到累计失窃次数',
+  /theftCount:\s*\(state\.baseState/.test(shopSrc27), '不传 = 基地面板上没有这个数');
+ok('D33 基地界面必须显示累计失窃',
+  /累计失窃/.test(uiSrc27), '数字传了却不显示 = 还是死维度');
+
+/* ── D34 角色态度基线 ─────────────────────────────────── */
+{
+  const grab = (role) => {
+    const i = shopSrc27.indexOf("role: '" + role + "'");
+    if (i < 0) return null;
+    const chunk = shopSrc27.slice(i, i + 900);
+    const m = chunk.match(/attitude:\s*([0-9.]+)/);
+    return m ? Number(m[1]) : null;
+  };
+  const scav = grab('scavenger');
+  const coll = grab('collector');
+  ok('D34 拾荒者必须声明态度基线', scav !== null, '角色没声明基线');
+  ok('D34 藏家必须声明态度基线', coll !== null, '角色没声明基线');
+  ok('D34 藏家的基线必须高于拾荒者',
+    scav !== null && coll !== null && coll > scav,
+    '基线没差别 = 换谁上台出价都一样');
+  ok('D34 角色基线必须真的传到 NPC 对象上',
+    /attitude:\s*Number\.isFinite\(conf\.attitude\)\s*\?\s*conf\.attitude\s*:\s*1\.0/.test(shopSrc27),
+    '不传 = 基线仍然没被读');
+  ok('D34 柜台态度必须由基线乘心情得出',
+    /baseline\s*\*\s*mood/.test(shopSrc27), '柜台态度与「他是谁」无关');
+  ok('D34 柜台态度必须夹在合理区间',
+    /Math\.max\(0\.5,\s*Math\.min\(2,/.test(shopSrc27),
+    '跑飞了 = 出价能算出离谱的价');
+}
+
+/* ── D35 上一局拍卖收场 ───────────────────────────────── */
+ok('D35 拍卖面板必须接到上一局快照',
+  /lastResult:\s*state\.lastAuctionResult\s*\|\|\s*null/.test(shopSrc27),
+  '不接 = 快照记了玩家一行也看不到');
+ok('D35 界面必须画出上一局',
+  /wl-auction__last/.test(uiSrc27), '上一局那一块不见了');
+ok('D35 三种收场方式必须都写清楚',
+  /拍数推满，正常结束/.test(uiSrc27) &&
+  /换周时补拍结束/.test(uiSrc27) &&
+  /兜底结算/.test(uiSrc27),
+  '少一种 = 玩家看不懂这一局是怎么收的');
+
+/* ── 这一轮的测试文件必须存在 ─────────────────────────── */
+ok('D27-D35 结算如实化回归文件存在',
+  existsSync(resolve(root, 'tests/settlement-reporting.cjs')));
+ok('D27-D35 结算如实化变异测试文件存在',
+  existsSync(resolve(root, 'tests/settlement-reporting-mutation.cjs')));
+ok('D27-D35 变异测试必须唯一性校验锚点',
+  (() => {
+    const t = readFileSync(resolve(root, 'tests/settlement-reporting-mutation.cjs'), 'utf8');
+    return /插入|insert/.test(t);
+  })(),
+  '「加回一段被删掉的代码」是另一种变异形状，替换语义做不到');
+
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数
  * 这一条自己数自己，所以拿「本条也计入后的总数」来比 ——

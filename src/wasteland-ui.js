@@ -335,6 +335,25 @@
         return label + ' ' + row.filled + '/' + row.need;
       }).join(' / ');
       info.appendChild(el('p', {}, '想收：' + wantText));
+      /* 达成率（缺陷 D29）：wantRatio 是「按数量加权的达成率」，
+       * 界面一直想画一条进度条却没有这个值 —— 那一行注释写着
+       * 「界面拿它画进度条」，可这里从来没读过它。
+       * 现在把它读出来：玩家能一眼看出自己离凑齐整单还差多少，
+       * 而不是只能逐条数「材料 2/4、食品 0/1」。 */
+      if (Number.isFinite(s.wantRatio)) {
+        var pct = Math.round(Math.max(0, Math.min(1, s.wantRatio)) * 100);
+        var meter = el('div', {class:'wl-counter-meter'});
+        meter.setAttribute('role', 'progressbar');
+        meter.setAttribute('aria-valuemin', '0');
+        meter.setAttribute('aria-valuemax', '100');
+        meter.setAttribute('aria-valuenow', String(pct));
+        var fill = el('i', {class:'wl-counter-meter__fill'});
+        fill.style.width = pct + '%';
+        meter.appendChild(fill);
+        info.appendChild(meter);
+        info.appendChild(el('p', {class:'wl-counter-hint'},
+          '清单达成率 ' + pct + '%' + (s.bulkMet ? '（已凑齐，含批发加成）' : '')));
+      }
       if (s.bulkMet) {
         info.appendChild(el('p', {class:'wl-counter-hint'}, '整单凑齐，出价含批发加成。'));
       }
@@ -557,23 +576,51 @@
     });
   }
 
-  function renderEventLog(container, events) {
+  /* 缺陷 D29：state.log 是**近 30 天的记事档案**。
+   *
+   * 以前这个档案谁都没初始化过 —— core 里那句 `if(state.log){...}`
+   * 于是永远不进，整个功能是关闭的。现在商店在「结束今天」时归档，
+   * 这里把它显示出来。
+   *
+   * 档案条目形如 {day, events:[...], warnings:[...]}。
+   * 界面按天分组，每天一行摘要（当天记了几件事、有没有告警），
+   * 展开后列出当天的事件。
+   */
+  function renderEventLog(container, events, archive) {
     var list = (events || []).slice().reverse().slice(0, 12);
     container.innerHTML = '';
     container.className = 'wl-event-log';
     if (!list.length) {
       container.appendChild(el('p', {class:'wl-empty'}, '今天还没有记事。'));
-      return;
+    } else {
+      list.forEach(function (ev) {
+        var row = el('article', {class:'wl-event wl-event--' + (ev.type || 'note')});
+        var head = el('div', {class:'wl-event__head'});
+        head.appendChild(el('b', {}, ev.label || '记事'));
+        if (ev.hour != null) head.appendChild(el('span', {}, ev.hour + ':00'));
+        row.appendChild(head);
+        if (ev.desc) row.appendChild(el('p', {class:'wl-event__desc'}, ev.desc));
+        container.appendChild(row);
+      });
     }
-    list.forEach(function (ev) {
-      var row = el('article', {class:'wl-event wl-event--' + (ev.type || 'note')});
-      var head = el('div', {class:'wl-event__head'});
-      head.appendChild(el('b', {}, ev.label || '记事'));
-      if (ev.hour != null) head.appendChild(el('span', {}, ev.hour + ':00'));
-      row.appendChild(head);
-      if (ev.desc) row.appendChild(el('p', {class:'wl-event__desc'}, ev.desc));
-      container.appendChild(row);
+
+    /* 历史档案：只列最近 6 天，每天一行摘要。
+     * 全部 30 天全展开会把记事面板撑爆 —— 面板是给「今天」用的，
+     * 历史档案是给「回看」用的，摘要足够。 */
+    var arch = (archive || []).slice().reverse().slice(0, 6);
+    if (!arch.length) return;
+    var box = el('div', {class:'wl-event-archive'});
+    box.appendChild(el('span', {class:'wl-event-archive__label'}, '近 ' + (archive || []).length + ' 天档案'));
+    arch.forEach(function (day) {
+      var evs = day.events || [];
+      var warns = day.warnings || [];
+      var line = el('div', {class:'wl-event-archive__day'});
+      line.appendChild(el('b', {}, '第 ' + day.day + ' 天'));
+      line.appendChild(el('small', {},
+        evs.length + ' 件事' + (warns.length ? ' · ' + warns.length + ' 条告警' : '')));
+      box.appendChild(line);
     });
+    container.appendChild(box);
   }
 
   // ── 声誉面板：整体 + 分阵营 ─────────────────────────────
@@ -622,10 +669,21 @@
     container.style.cssText = '';
     container.className = 'wl-market-board';
     categories.forEach(function (cat) {
-      var legacy = s[cat.key] || s.prices && s.prices[cat.key] || {};
+      /* 缺陷 D30：以前这里有一层「老格式兼容」回退：
+       *   var legacy = s[cat.key] || s.prices && s.prices[cat.key] || {};
+       *
+       * 它读的两条路**都不存在**：
+       *   · s[cat.key]      —— marketState 里没有按品类平铺的字段
+       *   · s.prices        —— 顶层 state.prices 从来没被写、也从没被传进来
+       *                      （界面拿到的是 state.market，不是整个 state）
+       *
+       * 所以 legacy 永远是 {}，这层回退是一段永远走不到的死代码，
+       * 却让人误以为行情板兼容老存档格式。
+       * 现在删掉：行情板的唯一真值就是 state.market 的 coefficients / stockout。
+       * 系数取不到就回落 1.0（基准价），这是唯一合理的缺省。 */
       var value = s.coefficients && s.coefficients[cat.key];
-      var coef = Number.isFinite(value) ? value : legacy.coef != null ? legacy.coef : 1;
-      var shortage = !!(s.stockout && s.stockout[cat.key] > 0 || legacy.shortage);
+      var coef = Number.isFinite(value) ? value : 1;
+      var shortage = !!(s.stockout && s.stockout[cat.key] > 0);
       var delta = Math.round((coef - 1) * 100);
       var suffix = shortage ? 'scarce' : delta > 0 ? 'up' : delta < 0 ? 'down' : 'steady';
       var card = el('div', {class:'wl-market-card wl-market-card--' + suffix,'data-category':cat.key});
@@ -680,6 +738,10 @@
       item.brand  != null && item.brand ? ['品牌', item.brand] : null,
       item.brandPremium != null && item.brandPremium > 1
         ? ['品牌溢价', '+' + Math.round((item.brandPremium - 1) * 100) + '%'] : null,
+      /* 缺陷 D32：供货方要看得见。
+       * 以前 item.supplier 恒为 null —— 目录里没有一条 sku 定义了 supplier，
+       * 订购和兜售两条路也都没写它，于是这个字段永远是死的。 */
+      item.supplier != null && item.supplier ? ['供货方', item.supplier] : null,
     ].filter(Boolean);
 
     if (attrs.length) {
@@ -693,6 +755,16 @@
         attrGrid.appendChild(row);
       });
       container.appendChild(attrGrid);
+    }
+
+    /* 缺陷 D32：备注块终于被渲染了。
+     * CSS 里 .wl-detail__notes / __notes-label / __notes-body 三条样式
+     * 早就是为它写的，但界面上从来没有过这一块 —— item.notes 恒为 ''。 */
+    if (item.notes) {
+      var notesBox = el('div', {class:'wl-detail__notes'});
+      notesBox.appendChild(el('span', {class:'wl-detail__notes-label'}, '备注'));
+      notesBox.appendChild(el('p', {class:'wl-detail__notes-body'}, esc(item.notes)));
+      container.appendChild(notesBox);
     }
 
     // Price block
@@ -973,6 +1045,16 @@
       card.appendChild(actions);
       leftPanel.appendChild(card);
     });
+
+    /* 缺陷 D33：累计失窃次数。
+     * timers.theft 以前恒为 0（没人加过、没人读过），
+     * 于是「安保到底有没有用」玩家无从判断。现在这个数字摆在设施面板上。 */
+    if (Number.isFinite(opt.theftCount) && opt.theftCount > 0) {
+      var theftLine = el('p', {class:'wl-base__theft'});
+      theftLine.textContent = '累计失窃 ' + opt.theftCount + ' 次';
+      leftPanel.appendChild(theftLine);
+    }
+
     container.appendChild(leftPanel);
 
     // Right: 4x3 free grid (80px cells)
@@ -1329,6 +1411,33 @@
       bidRow.appendChild(bidBtn);
       container.appendChild(bidRow);
     }
+
+    /* 缺陷 D35：上一局的收场结果。
+     *
+     * state.lastAuctionResult 一直在记录「这一局是怎么收的」
+     * （拍数推满 / 换周补拍 / 兜底 / 赢没赢 / 最终价），
+     * 但拍卖面板从来没显示过它 —— 玩家只能看当前这一局，
+     * 而拍卖对象又会被下一周的新局顶掉，于是「上一局怎么收的」
+     * 在界面上根本查不到。
+     *
+     * 现在显示出来。三种收场方式说清楚：
+     *   rounds  = 拍数推满，正常结束
+     *   week    = 换周时补拍结束
+     *   fallback = 连补拍都没兜住的保底
+     */
+    var last = s.lastResult;
+    if (last && typeof last === 'object') {
+      var settledLabel = last.settledBy === 'rounds' ? '拍数推满，正常结束'
+        : last.settledBy === 'week' ? '换周时补拍结束'
+        : last.settledBy === 'fallback' ? '兜底结算' : '收场方式未知';
+      var lastBox = el('div', {class:'wl-auction__last'});
+      lastBox.appendChild(el('span', {class:'wl-auction__last-label'}, '上一局'));
+      lastBox.appendChild(el('p', {class:'wl-auction__last-body'},
+        (last.playerWon ? '你拍到了' : '没拍到') +
+        ' · 成交 ¤' + Number(last.currentBid || 0).toLocaleString() +
+        ' · 第 ' + (last.round || 0) + '/' + (last.maxRounds || 0) + ' 拍 · ' + settledLabel));
+      container.appendChild(lastBox);
+    }
   }
 
   // ── 8. renderMachineZone：机器区 + 生产排产 ───────────────
@@ -1363,6 +1472,17 @@
     var power = el('p', {class:'wl-machines__power' + (d.powerOnline ? '' : ' wl-machines__power--off')},
       d.powerOnline ? '⚡ 电力在线，机器可以开工' : '⚠ 断电：机器停工，批次原地等待，不消耗原料');
     container.appendChild(power);
+
+    /* 缺陷 D31：产线停摆原因与批次分布。
+     * 以前这里只有一句「⚠ 断电」，玩家分不清
+     * 「整条产线都在等电」和「只有某几批在等」。 */
+    var prod = d.production || {};
+    if (prod.total) {
+      var prodLine = el('p', {class:'wl-machines__production'});
+      prodLine.textContent = '在跑批次 ' + (prod.running || 0) + ' / ' + prod.total +
+        (prod.parked ? '（' + prod.parked + ' 批停着：' + (prod.idleReason || '等条件') + '）' : '');
+      container.appendChild(prodLine);
+    }
 
     /* 机器区容量（缺陷 D14）：以前界面上一个数字都没有，
      * 玩家只收到一句「机器区已经排满。先腾个位置。」，
@@ -1435,7 +1555,17 @@
       ids.forEach(function (rid) {
         var recipe = recipes[rid];
         if (!recipe) return;
-        var canDo = !m.running && d.powerOnline && craftable[rid];
+        /* 缺陷 D31：「能不能开工」由商店给权威答案（m.canRun），
+         * 界面不再自己重算一遍。
+         * 以前两边各算各的（界面：!m.running && d.powerOnline；商店：_machineCanRun），
+         * 一旦不同步，玩家就会看到「按钮能点，点了却被拒」。 */
+        var machineReady = (m.canRun !== undefined)
+          ? !!m.canRun
+          : (!m.running && d.powerOnline);
+        var canDo = machineReady && craftable[rid];
+        var blockedReason = !machineReady
+          ? (m.busy ? '这台机器上还有一批活没做完' : '断电，机器停工')
+          : (!craftable[rid] ? '原料不够' : '');
         var row = el('div', {class:'wl-machine__recipe'});
         var label = el('div', {class:'wl-machine__recipe-label'});
         label.appendChild(el('b', {}, esc(recipe.label)));
@@ -1451,6 +1581,7 @@
         var btn = el('button', {type:'button',class:'wl-btn wl-btn--sm',
           'aria-label':'在' + m.name + '上开始' + recipe.label}, '开工');
         btn.disabled = !canDo;
+        if (blockedReason) btn.title = blockedReason;
         on(btn, 'click', function () { if (cb.onProduce) cb.onProduce(m.id, rid); });
         row.appendChild(btn);
         list.appendChild(row);

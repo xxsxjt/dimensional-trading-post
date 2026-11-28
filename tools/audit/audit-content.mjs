@@ -548,6 +548,10 @@ const loadSrc = coreSrc.slice(coreSrc.indexOf('function loadGame'));
 const usedFields = new Set([...shopSrc.matchAll(/state\.([A-Za-z_][A-Za-z0-9_]*)/g)].map(m => m[1]));
 for (const f of usedFields) {
   if (initFields.has(f) || assigned.has(f) || loadSrc.indexOf(f) !== -1) continue;
+  /* 缺陷 D30：state.prices 是**故意删掉**的字段 ——
+   * 它从来没被写、也从没被读，迁移里显式 delete。
+   * 它的「写入来源」就是那一句 delete，不该再报无初始化来源。 */
+  if (f === 'prices') continue;
   add('warn', 'state', 'state.' + f + ' 无初始化来源');
 }
 

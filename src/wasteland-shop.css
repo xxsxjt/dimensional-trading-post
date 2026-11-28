@@ -745,6 +745,9 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-counter-person b { font-size: 15px; color: #f0dfbd; }
 .wl-counter-person span { font-size: 11px; color: var(--wl-muted); }
 .wl-counter-person p { flex: 0 0 100%; font-size: 12px; color: #b0c4d1; }
+/* 需求达成率进度条（缺陷 D29）：wantRatio 一直被算出来却没人看 */
+.wl-counter-meter { flex: 0 0 100%; height: 6px; margin: 4px 0 2px; border-radius: 3px; background: #14242f; overflow: hidden; }
+.wl-counter-meter__fill { display: block; height: 100%; background: var(--wl-accent); }
 .wl-counter-slots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .wl-counter-slot { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px; min-width: 0; min-height: 60px; padding: 8px 3px; border: 1px dashed #334b5b; border-radius: 4px; background: #0c1925; color: #73919e; }
 .wl-counter-slot--filled { border-style: solid; border-color: #617b82; color: #e0e8ed; }
@@ -798,6 +801,12 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-event__head b { font-size: 12px; font-weight: 650; color: #dbe6ea; }
 .wl-event__head span { font-size: 10px; color: var(--wl-muted); }
 .wl-event__desc { margin-top: 3px !important; font-size: 11px; line-height: 1.6; color: #a9bccb; }
+/* 近 30 天记事档案（缺陷 D29） */
+.wl-event-archive { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--wl-rule); }
+.wl-event-archive__label { display: block; font-size: 10px; font-weight: 800; letter-spacing: .1em; color: var(--wl-muted); margin-bottom: 5px; }
+.wl-event-archive__day { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 2px 0; }
+.wl-event-archive__day b { font-size: 11px; font-weight: 600; color: #b0c4d1; }
+.wl-event-archive__day small { font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 
 .wl-supply { display: flex; flex-direction: column; gap: 8px; }
 .wl-supply-tag { padding: 1px 6px; border: 1px solid var(--wl-rule); border-radius: 3px; }
@@ -854,6 +863,8 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-facility-card__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .wl-facility-card__max { font-size: 10px; color: var(--wl-good); }
 .wl-facility-card .wl-btn[disabled] { opacity: .45; cursor: not-allowed; }
+/* 累计失窃次数（缺陷 D33） */
+.wl-base__theft { margin-top: 8px !important; font-size: 10px; color: var(--wl-amber); font-variant-numeric: tabular-nums; }
 
 .wl-dispatch { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--wl-rule); }
 .wl-dispatch__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -885,6 +896,8 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-machines__world { font-size: 10px; color: var(--wl-muted); }
 .wl-machines__power { margin-top: 8px !important; font-size: 10px; color: var(--wl-good); }
 .wl-machines__power--off { color: var(--wl-amber); }
+/* 产线批次分布行（缺陷 D31）：在跑几批、停着几批、为什么停 */
+.wl-machines__production { margin-top: 4px !important; font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 /* 机器区容量行（缺陷 D14）：机器区多大、占了多少，一眼看清楚。 */
 .wl-machines__capacity { margin-top: 4px !important; font-size: 10px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 /* 拆解 / 升级按钮 */
@@ -969,6 +982,10 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 
 /* 拍卖：货箱缩略图 + 名称并排 */
 .wl-auction-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+/* 上一局收场摘要（缺陷 D35） */
+.wl-auction__last { margin-top: 10px; padding: 7px 9px; border-left: 2px solid var(--wl-accent); background: rgba(121,231,238,.05); border-radius: 0 4px 4px 0; }
+.wl-auction__last-label { display: block; font-size: 10px; font-weight: 800; letter-spacing: .1em; color: var(--wl-accent); margin-bottom: 3px; }
+.wl-auction__last-body { margin: 0; font-size: 11px; color: #b0c4d1; font-variant-numeric: tabular-nums; }
 .wl-auction-crate {
   width: 56px; height: 56px; flex: 0 0 auto;
   border-radius: 6px; object-fit: cover;

@@ -351,8 +351,22 @@
       icon: sku.icon||'📦',
       tags: sku.tags||[],
       brand: overrides.brand || sku.brand || null,
+      /* 缺陷 D32：supplier 与 notes 以前是**两个纯装饰的字段**。
+       *
+       * supplier：目录里没有任何一条 sku 定义了 supplier，
+       *   于是它恒为 null —— 即使写了这个字段，也没有任何货会带上它。
+       *   现在它真的被填上：谁供的货，就记谁。
+       *   订购的货记人脉名字，上门兜售的货记商旅名字。
+       *
+       * notes：以前恒为 ''，而 CSS 里那一整套 .wl-detail__notes 样式
+       *   （.wl-detail__notes / __notes-label / __notes-body）
+       *   是**为它写的，却从来没被渲染过**。
+       *   现在备注真的会写、也会显示：
+       *   · 假货鉴定出结果时，鉴定结论写进备注
+       *   · 失窃/过期这类经历写进备注
+       */
       supplier: overrides.supplier || sku.supplier || null,
-      notes: ''
+      notes: overrides.notes || ''
     };
     if(sku.puritySystem){
       item.purity=overrides.purity||3;
@@ -1364,10 +1378,21 @@
       result.events.push('[随机事件] '+ev);
     }
 
-    if(state.log){
-      state.log.push({day:state.day,events:result.events.slice(),warnings:result.warnings.slice()});
-      if(state.log.length>30)state.log=state.log.slice(-30);
-    }
+    /* 缺陷 D29：这一天的记事归档**不再由 core 负责**。
+     *
+     * 以前这里有一句 `if (state.log) { state.log.push({day:state.day, ...}) }`，
+     * 但 state.log 从来没被初始化过 —— createInitialState 没有它，
+     * 迁移层也没有它 —— 于是这个分支**一次都没进过**，
+     * 那个「保留最近 30 天记事」的档案从头到尾是关闭的。
+     *
+     * 而且就算把它打开也是错的：core 在 day++ **之前**被调用，
+     * 它记下的 day 还是**旧的一天**，可它产出的那些事件
+     * （行情、保质期）进了商店的 todayEvents，是**新一天**的事。
+     * 同一个 day 键挂着跨两天的事件，档案会对不上。
+     *
+     * 所以归档改由商店侧在「结束今天」这一步做 ——
+     * 那才是真正的一天边界，todayEvents 也是在那时才完整的。
+     * core 这一段删掉，不留半死不活的分支。 */
 
     return result;
   }
