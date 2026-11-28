@@ -887,6 +887,9 @@ img.wl-machine-buy__icon { width: 18px; height: 18px; vertical-align: -4px; }
 .wl-dispatch__dest[disabled] { opacity: .45; cursor: not-allowed; }
 .wl-dispatch__dest-meta { display: block; margin-top: 4px; font-size: 9px; color: var(--wl-muted); font-variant-numeric: tabular-nums; }
 .wl-dispatch__hint { margin-top: 10px !important; font-size: 10px; line-height: 1.6; color: var(--wl-muted); }
+/* 缺陷 D40：三段闭环提示。只派不卖会亏钱，这句话必须显眼。 */
+.wl-dispatch__loop { margin: 8px 0 0 !important; padding: 7px 9px; font-size: 10px; line-height: 1.7;
+  color: var(--wl-text); border-left: 2px solid var(--wl-accent); background: rgba(0, 0, 0, .25); }
 #wl-loot { margin-top: 20px; }
 
 /* ── 机器区与生产 ─────────────────────────────────────────── */

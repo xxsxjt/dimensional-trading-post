@@ -508,6 +508,15 @@
   // ── 人脉订购：后期解锁的稳定供货渠道 ─────────────────
   function renderContacts(container, contacts, offers, callbacks) {
     var list = contacts || [], byContact = offers || {}, cb = callbacks || {};
+    /* 缺陷 D38：合作天数要算出来，界面得知道「今天是哪天」。
+     *
+     * contact.since 是人脉被打通那天的天数，一直记着但没人读。
+     * 现在要把它显示成「合作 N 天」，就得有今天的天数 ——
+     * contacts 列表的每一条都带上 currentDay。 */
+    var currentDay = null;
+    list.forEach(function (c) {
+      if (c && c.currentDay != null) currentDay = c.currentDay;
+    });
     container.innerHTML = '';
     container.className = 'wl-contacts';
     if (!list.length) {
@@ -521,9 +530,24 @@
       head.appendChild(el('span', {class:'wl-contact__icon','aria-hidden':'true'}, contact.icon || '\u{1F3ED}'));
       var title = el('div', {});
       title.appendChild(el('b', {}, esc(contact.name)));
-      title.appendChild(el('small', {}, contact.unlocked
+      /* 缺陷 D38：contact.since 是**死字段** —— 写了从没读过。
+       *
+       * 人脉打通的时候商店会记下 `contact.since = state.day`，
+       * 但界面上从来没显示过它。于是玩家看不出：
+       *   · 这条人脉是什么时候打通的
+       *   · 合作了多久
+       * 一个「越久越熟」的渠道没有时间维度，就只是「解锁了」。
+       *
+       * 现在把合作时长摆出来。这里用的是 currentDay —— 界面拿到的
+       * contacts 列表要带上今天是哪天，否则只能显示 0 天。 */
+      var sub = contact.unlocked
         ? '可订购 · 约 ' + contact.leadDays + ' 天到货'
-        : '尚未打通 · 需要更高声誉与更多成交'));
+        : '尚未打通 · 需要更高声誉与更多成交';
+      if (contact.unlocked && contact.since != null) {
+        var days = Math.max(0, (currentDay || 0) - contact.since);
+        sub += ' · 合作 ' + days + ' 天';
+      }
+      title.appendChild(el('small', {}, sub));
       head.appendChild(title);
       card.appendChild(head);
 
@@ -1290,6 +1314,22 @@
             return t && t.label ? t.label : k;
           }).join('、') + '；越远越贵，空手概率也越高，且要先付得起补给费。'
         : '今天没有可派出的去处。'));
+
+    /* 缺陷 D40：派遣面板必须说清「三段闭环」。
+     *
+     * 实测（tests/economy-contract.cjs）：
+     *   只派遣、不变现      → 8 局全灭（第 42~50 天停业，金币 -228 ~ -388）
+     *   派遣 + 领回 + 出货  → 8 局全活（第 60 天金币 252 ~ 572）
+     *
+     * 派遣费是**先付**的，回来的战利品只是货，**放着不卖一分钱都不回本**。
+     * 以前这个面板只写「派遣是补贴」，玩家读完根本不知道自己还得把货卖出去，
+     * 于是只派不卖，几十天后被租金磨死，还以为游戏经济有问题。
+     *
+     * 这里把三段直接写出来：派出去 → 领回来 → 摆上柜台卖。
+     * 第三段是**唯一能回本的一步**，必须点明。 */
+    container.appendChild(el('p', {class:'wl-dispatch__loop'},
+      '闭环：派出去 → 领回战利品 → 摆上柜台卖出去。' +
+      '补给费先付，只有第 3 步卖掉才回本 —— 只派不卖会越派越穷。'));
 
   }
 

@@ -259,6 +259,8 @@ const TEST_SUITES = [
   ['build', 'tests/build-retention.cjs'],
   ['build-orphan', 'tests/build-orphan-salvage.cjs'],
   ['settlement-reporting', 'tests/settlement-reporting.cjs'],
+  ['debt-contract', 'tests/debt-contract.cjs'],
+  ['economy-contract', 'tests/economy-contract.cjs'],
 ];
 const suiteRuns = TEST_SUITES.map(([name, rel]) => {
   const r = spawnSync(process.execPath, [resolve(root, rel)], {cwd: root, encoding: 'utf8'});
@@ -303,7 +305,7 @@ ok('派遣名额回归文件存在', existsSync(resolve(root, 'tests/dispatch-po
  * 实际跑出来是 17 条。总数对得上，所以没人发现。 */
 const REPORTED_SUITE_ITEMS = [
   ['tests/wasteland-shop.cjs', 17],
-  ['tests/soak.cjs', 6],
+  ['tests/soak.cjs', 7],
   ['tests/npc-rules.cjs', 8],
   ['tests/faction-rules.cjs', 8],
   ['tests/world-switch-rules.cjs', 8],
@@ -330,7 +332,9 @@ const REPORTED_SUITE_ITEMS = [
   ['tests/loop-rules.cjs', 9],
   ['tests/fuzz.cjs', 1],
   ['tests/build-retention.cjs', 1],
-  ['tests/build-orphan-salvage.cjs', 1]
+  ['tests/build-orphan-salvage.cjs', 1],
+  ['tests/debt-contract.cjs', 17],
+  ['tests/economy-contract.cjs', 7]
 ];
 ok('报告声明的各套件条数与真实 PASS 条数一致',
   REPORTED_SUITE_ITEMS.every(([rel, n]) => {
@@ -1989,6 +1993,119 @@ ok('D27-D35 变异测试必须唯一性校验锚点',
     return /插入|insert/.test(t);
   })(),
   '「加回一段被删掉的代码」是另一种变异形状，替换语义做不到');
+
+
+/* ── D36–D40：欠债终点 / 可花余额同源 / 合作天数 / 派遣闭环提示 ──
+ *
+ * 这一轮的起因是「店欠着租不还，开 200 多天余额 -¤3240」。
+ * 查下来是四条独立的缺陷：
+ *   D36 欠债没有终点（真缺陷，已修）
+ *   D37 界面和商店各算各的钱（真缺陷，已修）
+ *   D38 contact.since 是死字段（真缺陷，已修）
+ *   D39 经济失衡（查错了，不成立 —— 但引出 D40）
+ *   D40 玩家不知道派遣回来的货还得卖（真缺陷，已修）
+ *
+ * 这里做源码级断言，把每一条修复钉住。 */
+const shopSrc40 = src('src/wasteland-shop.js');
+const uiSrc40   = src('src/wasteland-ui.js');
+
+/* ── D36 欠债终点 ───────────────────────────────────────── */
+ok('D36 必须有可变现资产估值函数',
+  /function\s+_liquidValue/.test(shopSrc40), '没有这个口径就分不清「周转不灵」和「经营失败」');
+ok('D36 资产估值必须把柜台上的货算进去',
+  /function\s+_liquidValue[\s\S]{0,700}?_counterItems/.test(shopSrc40),
+  '柜台上的货也是能卖的资产，不算就是低估了玩家的偿付能力');
+ok('D36 必须有欠债缓冲期常量',
+  /DEBT_GRACE_DAYS\s*=\s*\d+/.test(shopSrc40), '缓冲期必须是显式常量，不能是散落的魔数');
+ok('D36 收场判据必须包含「资产盖不住债」',
+  /coverable/.test(shopSrc40) &&
+  /liquid\s*>=\s*owed/.test(shopSrc40),
+  '没有资产覆盖判断，就会冤杀手上有一大批货的周转玩家');
+ok('D36 收场判据必须包含缓冲期条件',
+  /debtDays\s*>=\s*DEBT_GRACE_DAYS/.test(shopSrc40),
+  '没有缓冲期 = 一还不上租金就死');
+ok('D36 欠债天数必须在资产盖得住时清零',
+  /state\.debtDays\s*=\s*\(inDebt\s*&&\s*!coverable\)/.test(shopSrc40),
+  '资产盖得住债就不该累加欠债天数');
+ok('D36 停业记录必须带上欠债明细',
+  /debtDays:\s*state\.debtDays/.test(shopSrc40) &&
+  /owed:\s*owed/.test(shopSrc40) &&
+  /liquidValue:\s*liquid/.test(shopSrc40),
+  '玩家得看得见欠了多少、资产有多少');
+ok('D36 欠债事件必须单独上报',
+  /'debt_over'/.test(shopSrc40), '欠债停业和普通停业要分开说');
+ok('D36 初始状态必须初始化 debtDays',
+  /debtDays:\s*0/.test(shopSrc40), '不初始化就是 undefined，计数器从 NaN 开始');
+ok('D36 存档迁移必须兜住 debtDays',
+  /if\s*\(!Number\.isFinite\(state\.debtDays\)\)\s*state\.debtDays\s*=\s*0/.test(shopSrc40) ||
+  /state\.debtDays\s*=\s*state\.debtDays\s*\|\|\s*0/.test(shopSrc40),
+  '老存档没有这个字段，不兜住就是 undefined');
+ok('D36 停业后今天NPC必须收掉',
+  /state\.todayNPCs\s*=\s*\[\]/.test(shopSrc40), '停业后店里还挂着没人接待的客人');
+
+/* ── D37 可花余额同源 ───────────────────────────────────── */
+const goldSites = [
+  ['基建设施面板', /renderBaseView[\s\S]{0,900}?gold:\s*_spendableGold\(\)/],
+  ['派遣面板',     /renderDispatchPanel[\s\S]{0,900}?gold:\s*_spendableGold\(\)/],
+  ['机器区',       /function\s+_machineZoneData[\s\S]{0,6000}?gold:\s*_spendableGold\(\)/],
+  ['人脉订购',     /byContact\[[^\]]+\]\s*=\s*\{[^}]*gold:\s*_spendableGold\(\)/]
+];
+goldSites.forEach(([name, re]) => {
+  ok('D37 ' + name + '必须按可花余额判「买得起」', re.test(shopSrc40),
+    '界面按余额判、商店按可花余额判 → 按钮能点但点进去说没钱');
+});
+ok('D37 可花余额函数必须存在',
+  /function\s+_spendableGold/.test(shopSrc40), '这个口径是界面与商店的共同基准');
+ok('D37 可花余额必须扣掉拍卖冻结款',
+  /_spendableGold[\s\S]{0,200}?_escrowHeld/.test(shopSrc40),
+  '冻结的钱已经许给拍卖了，不能再花一次');
+
+/* ── D38 合作天数 ───────────────────────────────────────── */
+ok('D38 联系人载荷必须带 currentDay',
+  /currentDay:\s*state\.day/.test(shopSrc40),
+  '界面要算天数差，光有 since 算不出来');
+ok('D38 联系人载荷必须带 since',
+  /since:\s*c\.since/.test(shopSrc40), '解锁日必须传到界面');
+ok('D38 界面必须渲染合作天数',
+  /'·\s*合作\s*'\s*\+\s*days/.test(uiSrc40) || /' · 合作 '/.test(uiSrc40),
+  'contact.since 不读的话就是死字段');
+ok('D38 天数差必须按当前日减解锁日',
+  /\(currentDay\s*\|\|\s*0\)\s*-\s*contact\.since/.test(uiSrc40),
+  '算错了方向就变成负数');
+ok('D38 未解锁的联系人不许显示合作时长',
+  /contact\.unlocked\s*&&\s*contact\.since\s*!=\s*null/.test(uiSrc40),
+  '没打通的关系没有「合作时长」');
+
+/* ── D40 派遣闭环提示 ───────────────────────────────────── */
+ok('D40 派遣面板必须写明三段闭环',
+  /派出去/.test(uiSrc40) && /领回/.test(uiSrc40) && /卖/.test(uiSrc40),
+  '不写清楚，玩家只派不卖，几十天后被租金磨死');
+ok('D40 闭环提示必须点明「卖掉才回本」',
+  /才回本/.test(uiSrc40), '补给费先付，不变现就永远亏');
+ok('D40 闭环提示必须有独立样式类',
+  /wl-dispatch__loop/.test(uiSrc40), '混在普通提示里玩家看不见');
+
+/* ── 本轮测试文件必须存在 ─────────────────────────────── */
+ok('D36-D40 欠债契约回归文件存在',
+  existsSync(resolve(root, 'tests/debt-contract.cjs')));
+ok('D36-D40 欠债契约变异测试文件存在',
+  existsSync(resolve(root, 'tests/debt-contract-mutation.cjs')));
+ok('D39 经济契约回归文件存在',
+  existsSync(resolve(root, 'tests/economy-contract.cjs')));
+ok('D36-D40 测试脚本必须登记进 package.json',
+  (() => {
+    const pkg = JSON.parse(src('package.json'));
+    return !!(pkg.scripts['test:debt'] && pkg.scripts['test:debt:mutation'] &&
+              pkg.scripts['test:economy']);
+  })(),
+  '脚本不登记 = 没人会跑，等于没写');
+ok('D36-D40 契约必须进默认 test 链',
+  (() => {
+    const pkg = JSON.parse(src('package.json'));
+    return /debt-contract\.cjs/.test(pkg.scripts.test) &&
+           /economy-contract\.cjs/.test(pkg.scripts.test);
+  })(),
+  '不进默认链 = CI 跑不到');
 
 
 /* 6c. 报告声明的「audit:verify 项数」必须等于本脚本自身的检查项数

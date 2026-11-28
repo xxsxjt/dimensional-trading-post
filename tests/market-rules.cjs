@@ -234,10 +234,25 @@ console.log('PASS a stockout restores the baseline when it ends instead of stick
     seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
     return ((seed >>> 0) % 1000000) / 1000000;
   };
-  const s = createSession(undefined, rnd);
+  /* 缺陷 D36 之后，欠租有了终点：这局什么都不做会在第 4 周左右停业，
+   * 天数冻结 —— 于是「400 天随机行情」根本跑不满 400 天，
+   * 排空窗口的时序全乱了，报出来的是**假红**。
+   *
+   * 这条测试要验的是**行情**，不是经营。所以给它一笔周转金，
+   * 让店撑住这 400 天。行情引擎跟余额无关，
+   * 这一点下面有断言守着（跑满 400 天、天数确实走到 401）。 */
+  const boot = createSession(undefined, rnd);
+  const bootRaw = JSON.parse(boot.raw());
+  bootRaw.gold = 100000;
+  const s = createSession({[SAVE_KEY]: JSON.stringify(bootRaw)}, rnd);
   for (let d=0; d<400; d++) s.endDay();
 
   const st = s.state();
+  assert.ok(!st.gameOver,
+    'the market fixture must stay open for all 400 days — it closed on day ' +
+    (st.gameOver && st.gameOver.day));
+  assert.equal(st.day, 401,
+    'the 400 settlements must actually advance 400 days, got day ' + st.day);
   const cats = Object.keys(st.market.coefficients);
   cats.forEach(c => {
     const v = st.market.coefficients[c];
@@ -284,7 +299,15 @@ console.log('PASS a stockout restores the baseline when it ends instead of stick
     'every stockout must have expired after the drain window');
   settled.market.coefficients && Object.keys(settled.market.coefficients).forEach(c => {
     const v = settled.market.coefficients[c];
-    const base = settled.market.baselines ? settled.market.baselines[c] : undefined;
+    /* 基线的默认值是 1.0 —— 没过冲击的品类根本不会被写进 baselines 表，
+     * 它的基线就是「初始系数 1.0」（见 core 的 _recompute：
+     * baselines[cat] 不是有限数就按 1.0 算）。
+     *
+     * 以前这里直接取 baselines[c]，没进表的品类拿到 undefined，
+     * 于是「v - undefined」是 NaN，断言必然假红。
+     * 这跟行情本身没关系，是断言口径没跟着实现走。 */
+    const recorded = settled.market.baselines ? settled.market.baselines[c] : undefined;
+    const base = (typeof recorded === 'number' && isFinite(recorded)) ? recorded : 1.0;
     assert.ok(Math.abs(v - base) < 1e-9,
       'category "' + c + '" must settle exactly on its baseline after every shock expires, ' +
       'got ' + v + ' vs baseline ' + base);

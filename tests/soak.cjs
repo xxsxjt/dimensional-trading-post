@@ -48,7 +48,7 @@ function makeNode(tag) {
   return node;
 }
 
-function createSession(seed) {
+function createSession(seed, rndSeed) {
   const values = new Map(Object.entries(seed || {})), nodes = new Map(), callbacks = {};
   const document = {
     head: makeNode('head'),
@@ -71,17 +71,39 @@ function createSession(seed) {
     renderItemDetail(node,data) { callbacks.detail = data; },
     renderAuction(node,data,cb) { callbacks.auction = {data,cb}; },
     renderMarketTicker() {},
-    renderBaseView(node,data) { callbacks.base = data; },
+    renderBaseView(node,data,cb) { callbacks.base = data; callbacks.baseCb = cb; },
     renderEventLog(node,data) { callbacks.events = data; },
     renderContacts(node,data,offers,cb) { callbacks.contacts = {data,offers,cb}; },
     renderNpcQueue(node,data,cb) { callbacks.queue = {data,cb}; },
     renderMachineZone(node,data,cb) { callbacks.machines = {data,cb}; },
     renderWorldPicker(node,data,cb) { callbacks.worlds = {data,cb}; },
+    renderDispatchPanel(node,data,cb) { callbacks.dispatch = {data,cb}; },
     renderLootClaim(node,items,cb) { callbacks.loot = {items,cb}; }
   };
   window.WastelandUI = ui;
+  /* 缺陷 D36：soak 必须是**可复现**的。
+   *
+   * 以前这个套件直接用宿主的 Math.random，于是：
+   *   · 同一份代码两次跑出的局完全不一样；
+   *   · 局好不好全看运气 —— 有的局撑满 60 天，有的第 8 天就破产；
+   *   · 破产以后 `todayNPCs` 被清空，于是「每天必有访客」这条断言炸掉，
+   *     而那不是缺陷，是**正确的收场行为**（缺陷 D36 就是给它定的终点）。
+   *
+   * 现在给沙箱一副可播种的随机数（mulberry32）：
+   *   跑多少遍结果都一样，炸了能定位到具体种子。
+   *
+   * `rndSeed` 允许外部覆盖，用来复现某一局的失败。 */
+  let a = (rndSeed == null ? 0x5eed1e : rndSeed) >>> 0;
+  const rnd = function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const sandboxMath = Object.create(Math);
+  sandboxMath.random = rnd;
   const context = vm.createContext({
-    window, document, console, Math, Date, JSON, Object, Array, String, Number, Boolean, parseInt, parseFloat, isNaN
+    window, document, console, Math: sandboxMath, Date, JSON, Object, Array, String, Number, Boolean, parseInt, parseFloat, isNaN
   });
   for (const file of modules) {
     vm.runInContext(fs.readFileSync(path.join(root, 'src', file + '.js'), 'utf8'), context, {filename:file + '.js'});
@@ -109,14 +131,138 @@ function findNonFinite(value, path, out) {
 
 /* ── 跑 N 天 ─────────────────────────────────────────────── */
 const DAYS = 60;
-const session = createSession();
+
+/* 缺陷 D36：soak 的职责是**状态漂移**，不是经济可行性。
+ *
+ * 以前这个局什么都不做，靠「欠债永远不收场」（D36 的老行为）撑满 60 天 ——
+ * 那是靠一个缺陷撑着的。
+ *
+ * 现在欠债有了终点（连续欠租一个周期、且资产盖不住 → 停业），
+ * 躺着不动就该在第 4 周左右停业 —— 这是**正确**行为。
+ * 所以这里让店铺**真的经营**：每天接待商旅、把库存整台谈一次、卖出，
+ * 顺便派一队出去。
+ *
+ * 整台一次谈不是偷懒 —— 实测这才是最优解：
+ * 整台出价 ¤142（商旅预算 ¥353 撑得住），
+ * 分件卖同一批货只值 ¤100 —— 因为需求达成率被稀释。
+ * 一次只卖一件反而更亏。
+ *
+ * 经济能不能玩、能不能活过 60 天，是**另外一件事**，
+ * 由 tests/economy-contract.cjs 单独验（缺陷 D39）。 */
+const session = createSession(null, 0x5eed1e);
 const core = session.window.WastelandCore;
+installPower(session);
+
+function playDay(s) {
+  /* 缺陷 D36/D40：这一局必须走**完整的三段闭环**。
+   *
+   * 派遣 → 领回战利品 → 摆上柜台卖出去。
+   *
+   * 只派不卖是必亏的：补给费先付，战利品放着不卖一分钱不回本。
+   * 只做柜台也不够 —— 实测（tests/economy-contract.cjs）那条路 20 局只活 7 局，
+   * 会被租金磨死。两条线合起来才撑得住 60 天。
+   */
+  dispatchOnce(s);
+  collectLoot(s);
+  sellToCounter(s);
+}
+
+/* 装电力 —— 派遣名额是 1 + 电力等级，没有电力就只有 1 队。 */
+function installPower(s) {
+  const btn = s.nodes.get('wl-switch-base');
+  if (btn && btn.onclick) btn.onclick();
+  const cb = s.callbacks.baseCb;
+  if (!cb || !cb.onInstall) return false;
+  try { cb.onInstall('power'); return true; } catch (e) { return false; }
+}
+
+/* 派一队去近郊（1 天来回，费率 ¤2，是唯一「今天缺钱」的快钱选项）。 */
+function dispatchOnce(s) {
+  const btn = s.nodes.get('wl-switch-base');
+  if (btn && btn.onclick) btn.onclick();
+  const panel = s.callbacks.dispatch;
+  const pd = panel && panel.data;
+  if (!pd || !panel.cb || !panel.cb.onSend) return false;
+  const st = s.state();
+  if (pd.inFlight >= pd.cap) return false;
+  const tier = pd.tiers && pd.tiers.suburb;
+  if (!tier) return false;
+  if (st.gold - tier.fee < 20) return false;
+  const npc = (pd.visitors || [])[0];
+  if (!npc) return false;
+  try { panel.cb.onSend('suburb', npc.id); return true; } catch (e) { return false; }
+}
+
+/* 领回全部战利品。 */
+function collectLoot(s) {
+  const loot = s.callbacks.loot;
+  if (loot && loot.items && loot.items.length && loot.cb && loot.cb.onCollectAll) {
+    try { loot.cb.onCollectAll(); return true; } catch (e) {}
+  }
+  return false;
+}
+
+/* 把仓库里的货摆上柜台，能卖就卖。
+ * 一天可以谈好几笔：每来一位商旅就报一次价，谈不拢就换下一位。 */
+function sellToCounter(s) {
+  let sold = 0;
+  for (let round = 0; round < 6; round++) {
+    const live = s.state();
+    if (live.gameOver) break;
+    const shopBtn = s.nodes.get('wl-switch-shop');
+    if (shopBtn && shopBtn.onclick) shopBtn.onclick();
+    const q = s.callbacks.queue;
+    const queue = (q && q.data) || [];
+    const next = queue.find(n => !n.activated && !n.dispatched);
+    if (!next) break;
+    try { q.cb.onActivate(next.id); } catch (e) { break; }
+    const st1 = s.state();
+    if (!st1.counterState || !st1.counterState.npcId) break;
+
+    /* 把他身上便宜的货先收下来（留周转金）。 */
+    const offers = (st1.counterState.npc && st1.counterState.npc.offers) || [];
+    const cheap = offers.slice().sort((a, b) => a.unitCost - b.unitCost);
+    for (const o of cheap) {
+      const st2 = s.state();
+      if (st2.gold - o.unitCost < 30) break;
+      try { s.callbacks.counter.onTakeOffer(o.id, 1); } catch (e) {}
+    }
+
+    /* 整台一次谈 —— 分开谈会稀释需求达成率，反而更亏。 */
+    const st3 = s.state();
+    const stock = Object.keys(st3.grid.items);
+    let slot = 0;
+    for (const id of stock) {
+      if (slot >= 32) break;
+      try { s.callbacks.counter.onSlotDrop({itemId: id, slotIdx: slot}); slot++; } catch (e) {}
+    }
+    const st4 = s.state();
+    const offer = st4.counterState.offer;
+    if (offer && offer > 0) {
+      try { s.callbacks.counter.onConfirm(); sold++; continue; } catch (e) { break; }
+    }
+    try { s.callbacks.counter.onReject(); } catch (e) { break; }
+  }
+  return sold > 0;
+}
 
 let prevDay = session.state().day;
 let prevWeek = session.state().week;
 let rentCharges = 0;
+let closedAt = null;
 
 for (let i = 0; i < DAYS; i++) {
+  /* 缺陷 D36：停业是**合法结局**，不是状态漂移。
+   *
+   * 欠债有了终点以后，一局玩得不好会在某一天收场。
+   * 收场之后 `todayNPCs` 被清空、天数冻结 —— 这正是缺陷 D36 定的行为。
+   * 所以这里不能把「没访客」当成漂移来断言，
+   * 而是：收场之后**必须**冻结、**必须**清空访客、**必须**如实记账。
+   *
+   * 收场之后立刻停手，剩下的天数只验证「收场状态不漂移」。 */
+  if (session.state().gameOver) break;
+
+  playDay(session);
   session.endDay();
   const st = session.state();
 
@@ -183,10 +329,21 @@ for (let i = 0; i < DAYS; i++) {
     assert.ok(st.playerSkill.health >= 0, 'day ' + st.day + ': stamina must not go negative (' + st.playerSkill.health + ')');
   }
 
-  /* 5. 每日必产出的商旅不缺失 */
-  assert.ok(Array.isArray(st.todayNPCs) && st.todayNPCs.length > 0,
-    'day ' + st.day + ': every day must generate at least one visitor');
-  for (const visitor of st.todayNPCs) {
+  /* 5. 每日必产出的商旅不缺失
+   *
+   * 缺陷 D36 之后这条要分两种情形：
+   *   还在营业 → 每天必须有访客（这是「店开着就得有客」的产品契约）；
+   *   已经收场 → 访客必须被清空（收场了还挂着没人接待的客人就是脏状态）。
+   * 两种都不满足才算漂移。 */
+  if (!st.gameOver) {
+    assert.ok(Array.isArray(st.todayNPCs) && st.todayNPCs.length > 0,
+      'day ' + st.day + ': every open day must generate at least one visitor');
+  } else {
+    closedAt = st.day;
+    assert.equal((st.todayNPCs || []).length, 0,
+      'day ' + st.day + ': a closed shop must not keep unreceived visitors');
+  }
+  for (const visitor of (st.todayNPCs || [])) {
     assert.ok(visitor.id, 'day ' + st.day + ': a visitor is missing its id');
     assert.ok(visitor.role, 'day ' + st.day + ': a visitor is missing its role');
   }
@@ -198,6 +355,25 @@ for (let i = 0; i < DAYS; i++) {
 assert.ok(rentCharges > 0, 'the soak must actually cross at least one weekly rent settlement');
 assert.ok(rentCharges <= Math.ceil(DAYS / 7) + 1,
   'rent must be charged about once a week, got ' + rentCharges + ' charges over ' + DAYS + ' days');
+
+/* 缺陷 D36：收场之后状态必须冻结 —— 不能再推进天数、
+ * 不能凭空长出访客、不能再扣一次租金。 */
+if (closedAt) {
+  const frozen = session.state();
+  assert.equal(frozen.day, closedAt, 'a closed shop must freeze the day counter');
+  const beforeRent = (frozen.todayEvents || []).filter(e => e.type === 'rent').length;
+  session.endDay();
+  const afterClose = session.state();
+  assert.equal(afterClose.day, closedAt, 'a closed shop must not advance the day any further');
+  assert.equal((afterClose.todayNPCs || []).length, 0,
+    'a closed shop must not spawn new visitors');
+  assert.equal((afterClose.todayEvents || []).filter(e => e.type === 'rent').length, beforeRent,
+    'a closed shop must not be charged rent again');
+  console.log('PASS a shop that closed on day ' + closedAt +
+    ' freezes the day counter, spawns no visitors and is charged no further rent');
+} else {
+  console.log('PASS the seeded run stayed open for all ' + DAYS + ' days');
+}
 
 /* ── 情形 A：满仓连推 30 天，货不能凭空消失（只有过期的会走） ── */
 const full = createSession();
@@ -246,7 +422,8 @@ console.log('PASS a full warehouse survives 30 settlements without losing or dup
  * 这里连开很多局，只要出现一天买得起的东西就说明兜底没生效。 */
 let strandedDays = 0;
 for (let i = 0; i < 300; i++) {
-  const run = createSession();
+  /* 每局换一颗种子 —— 全用同一颗就只是把同一局跑 300 遍。 */
+  const run = createSession(null, 0x5eed1e + i * 7919);
   const st = run.state();
   const carriers = (st.todayNPCs || []).filter(n => Array.isArray(n.offers) && n.offers.length);
   const affordable = carriers.some(n => n.offers.some(o => o.unitCost <= st.gold));
@@ -298,5 +475,5 @@ assert.equal(after.gold, saved.gold, 'the reloaded save must keep the same gold'
 assert.equal(after.week, saved.week, 'the reloaded save must keep the same week');
 
 console.log('PASS ' + DAYS + ' days of endDay() keep day/week monotone, the save parseable, ' +
-  'the warehouse cell map self-consistent, gold/stamina/reputation finite and every day yields visitors');
+  'the warehouse cell map self-consistent, gold/stamina/reputation finite and every open day yields visitors');
 console.log('PASS a reloaded save keeps day/gold/week identical (day=' + after.day + ', week=' + after.week + ')');

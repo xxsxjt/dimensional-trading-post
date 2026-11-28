@@ -297,6 +297,18 @@
   // 玩家既没犯错（他在正常经营），也拿不回钱，只能看着存档变成 gameOver。
   function _hasIncomeToday() {
     if ((state.returnedLoot || []).length) return true;
+    /* 缺陷 D36：仓里有货**不等于**永远不会收场。
+     *
+     * 这里保留原判据（仓里有货就算一条路）是有道理的：
+     * 手里有货就还有翻身的机会 —— 卖掉它就有钱。
+     *
+     * 但以前这个判据是**唯一**的收场条件，于是：
+     *   余额欠到 -¤3240、仓库里躺着 1 件没人要的水杯，
+     *   每天照样扣租、欠债一天比一天深，200 天都不收场。
+     *
+     * 欠债的终点由 _checkInsolvent 里的「连续欠债天数」负责（见那里）。
+     * 这一层只管「今天有没有生意可做」。 */
+    /* 仓库里有货 —— 卖掉它就有钱，这是最直接的一条路。 */
     if (Object.keys(state.grid.items || {}).length) return true;
     // 柜台上还摆着货 —— 那也是一笔待成交的生意。
     // 玩家把货放上柜台等出价，仓库就空了一半；
@@ -312,7 +324,7 @@
     if ((state.dispatches || []).length) return true;
     // 访客身上还有买得起的货，就还有生意可做
     return (state.todayNPCs || []).some(function (npc) {
-      return (npc.offers || []).some(function (offer) { return offer.unitCost <= state.gold; });
+      return (npc.offers || []).some(function (offer) { return offer.unitCost <= _spendableGold(); });
     });
   }
 
@@ -320,18 +332,112 @@
     return !_hasIncomeToday();
   }
 
+  /* 缺陷 D36：可变现资产估值 —— 仓里的货按市价能换回多少钱。
+   *
+   * 用来回答一个关键问题：「玩家是不是真的没救了？」
+   *   余额 -¤500，但仓里有 600 的货 → 他随时能卖掉还清，这是周转问题；
+   *   余额 -¤500，仓里只有 1 只水杯（市价 ¤3）→ 这才是真的没救了。
+   *
+   * 以前没有这个口径，于是「欠债」和「破产」被混成一件事。 */
+  function _liquidValue() {
+    var total = 0;
+    var grid = state.grid && state.grid.items ? state.grid.items : {};
+    Object.keys(grid).forEach(function (id) {
+      var entry = grid[id];
+      if (!entry || !entry.item) return;
+      total += Core.computePrice(state.market, entry.item);
+    });
+    /* 柜台上的货也算 —— 它们同样是能卖的资产，
+     * 只是还摆在台面上没收钱。 */
+    var held = state._counterItems || {};
+    Object.keys(held).forEach(function (id) {
+      if (held[id]) total += Core.computePrice(state.market, held[id]);
+    });
+    return total;
+  }
+
+  /* 缺陷 D36：欠债缓冲期 —— 连续多少天还不上就收场。
+   *
+   * 租金按周收，所以给一整个收租周期的缓冲。 */
+  var DEBT_GRACE_DAYS = 7;
+
   function _checkInsolvent() {
     if (state.gameOver) return false;
-    if (!_isStranded()) return false;
+    /* 缺陷 D36：欠债要有**终点**。
+     *
+     * 以前收场只有一个条件：没有任何一条收入来源。
+     * 于是玩家只要仓库里留一件货，就能无限期地欠租：
+     *   实测：留 1 件水杯，200 天欠到 -¤3240，游戏还在跑。
+     *
+     * 而设计里明明写着「租金已无力支付 → 小店停止营业」
+     * （gameOver.inDebt 那条文案就是它）。
+     * 欠债这条线从来没被真正接上。
+     *
+     * 现在收场有两个条件：
+     *   1. **完全没有收入来源** → 立刻收场（原行为，不变）
+     *   2. **连续欠债满一个收租周期**还没翻身 → 收场（新增，这才是终点）
+     *
+     * 为什么第 2 条是「连续」而不是「余额为负」：
+     *   欠债不是一次性事件，是一段时间的状态。
+     *   玩家要卖货、进货、跑一趟派遣、跟商旅谈一桩买卖 —— 都要时间。
+     *   余额一负就收场，等于「一还不上租金就死」，
+     *   把「周转不灵」和「经营失败」混成一件事。
+     *
+     * 为什么是一个收租周期（7 天）：
+     *   租金本来就是按周收的。一个周期都撑不过去，
+     *   说明这店真的救不回来了 —— 这才是终局信号。
+     *
+     * 余额从负数回到 0 以上，欠债天数就清零：
+     *   玩家翻了身，就不该再被旧账拖住。 */
+    var inDebt = state.gold < 0;
+
+    /* 「没救了」不等于「余额是负的」。
+     *
+     * 余额 -¤500，仓里有 ¤600 的货 → 卖掉就还上了，这是周转不灵，不是破产；
+     * 余额 -¤500，仓里只有 1 只水杯（市价 ¤3）→ 这才是真的还不上。
+     *
+     * 以前只按余额判，于是两件事被混成一件事：
+     *   · 仓里有货的负余额玩家被无限期拖着，200 天欠到 -¤3240 也不收场；
+     *   · 而实际上他随时可以把货变现还债。
+     *
+     * 现在欠债天数只在**资产盖不住债**的时候累加：
+     *   可变现资产（仓库 + 柜台，按市价算）>= |欠债| → 玩家还得清，
+     *     欠债天数清零 —— 他随时能翻身，不该被收场。
+     *   可变现资产 < |欠债| → 就算把所有货都卖掉也补不上洞，
+     *     这才是真正在往深渊里掉，欠债天数开始累加。
+     *
+     * 累加到 DEBT_GRACE_DAYS（一个收租周期）才收场：
+     *   租金按周收，一个周期都撑不过去，说明这店真的救不回来了。
+     *   给这一段缓冲，是为了让玩家有时间卖货、进货、跑一趟派遣。
+     *
+     * 余额回到 0 以上，欠债天数直接清零 —— 玩家翻了身，就不该再被旧账拖住。 */
+    var owed = inDebt ? -state.gold : 0;
+    var liquid = _liquidValue();
+    var coverable = owed > 0 && liquid >= owed;
+    state.debtDays = (inDebt && !coverable) ? ((state.debtDays || 0) + 1) : 0;
+
+    /* 第 1 个条件：一点收入来源都没有（原来的行为）。
+     * 第 2 个条件：欠债且资产盖不住，且已经熬过一个收租周期。 */
+    if (!_isStranded() && !(inDebt && !coverable && state.debtDays >= DEBT_GRACE_DAYS)) return false;
+
+    if (inDebt) {
+      state.todayEvents.push(_makeEvent('debt_over',
+        '欠租超过一整个周期',
+        '账户已经连续 ' + state.debtDays + ' 天透支，租金连着一周没付上。' +
+        '仓里能变现的货也补不上这个洞 —— 这间店救不回来了，小店停止营业。'));
+    }
     state.gameOver = {
       day:  state.day,
       week: state.week,
       gold: state.gold,
       inDebt: state.gold < 0,
+      debtDays: state.debtDays || 0,
+      owed: owed,
+      liquidValue: liquid,
       on:   Date.now()
     };
     state.todayEvents.push(_makeEvent('game_over', '经营失败',
-      state.gold < 0
+      inDebt
         ? '第 ' + state.day + ' 天的租金已无力支付，小店停止营业。'
         : '第 ' + state.day + ' 天，仓库已空且无力进货，小店停止营业。'));
     // 停业后要把当天的商旅和流动摊位收掉，否则店里还挂着没人接待的客人。
@@ -2161,6 +2267,8 @@
         offer:    null,
         attitude: 1.0
       },
+      /* 缺陷 D36：连续欠债天数（欠债缓冲期的计数）。 */
+      debtDays:    0,
       todayNPCs:   [],
       todayEvents: [],
       // 近 30 天的记事档案（缺陷 D29）。
@@ -3076,6 +3184,19 @@
   function _spendableGold() {
     return state.gold - _escrowHeld();
   }
+  /* 缺陷 D37：这里算出来的数**要传给界面**。
+   *
+   * 缺陷 D10 修完之后，商店那侧所有花钱的地方都按可花余额判，
+   * 界面那侧却按余额判 —— 于是出价冻结期间：
+   *   余额 ¤1000，冻结 ¤800 → 实际能花 ¤200
+   *   界面上的「订购 ¤300」按钮**不禁用**（300 < 1000）
+   *   玩家点下去 → 商店拒了 → 事件写「资金不足」
+   *
+   * 玩家看到的是「按钮能点，点进去却说没钱」——
+   * 界面和商店各算各的，两边不一致时玩家永远不知道该信哪个。
+   *
+   * 现在四个面板（基地 / 派遣 / 机器区 / 联系人）拿到的 gold
+   * 一律是可花余额，界面上的 disabled 判据和商店的资金判据同源。 */
 
   function playerBid(amount) {
     var auc = state.auction;
@@ -4155,7 +4276,7 @@
         defs:       FACILITY_DEFS,
         active:     activeMap,
         status:     statusMap,
-        gold:       state.gold,
+        gold:       _spendableGold(),
         fuelSkus:   FUEL_SKUS,
         fuelStock:  fuelStock,
         /* 缺陷 D33：累计失窃次数要看得见。
@@ -4188,7 +4309,7 @@
         tiers:         usableTiers,
         cap:           _dispatchCap(),
         inFlight:      _inFlightCount(),
-        gold:          state.gold,
+        gold:          _spendableGold(),
         powerOnline:   _powerOnline(),
         visitors:      (state.todayNPCs || []).filter(function (npc) {
           return npc && !npc.intel && !npc.dispatched && !npc.activated;
@@ -4199,7 +4320,22 @@
     // 人脉与订购
     var contactsEl = document.getElementById('wl-contacts');
     if (contactsEl && UI.renderContacts) {
-      UI.renderContacts(contactsEl, state.contacts || [], _buildContactOffers(), {
+      /* 缺陷 D38：每条人脉都要带上 currentDay ——
+       * 界面要靠它算「合作了几天」（contact.since 记的是打通那天）。
+       * 不给的话界面只能显示 0 天，或者干脆不显示。 */
+      var contactList = (state.contacts || []).map(function (c) {
+        return {
+          id:       c.id,
+          name:     c.name,
+          category: c.category,
+          icon:     c.icon,
+          leadDays: c.leadDays,
+          unlocked: c.unlocked,
+          since:    c.since,
+          currentDay: state.day
+        };
+      });
+      UI.renderContacts(contactsEl, contactList, _buildContactOffers(), {
         onOrder: placeOrder
       });
     }
@@ -4316,7 +4452,7 @@
       available:   available,
       recipes:     Core.RECIPE_DEFS || {},
       craftable:   craftable,
-      gold:        state.gold,
+      gold:        _spendableGold(),
       powerOnline: _powerOnline(),
       worldName:   _worldLabel(worldId),
       zoneCols:    zoneCols,
@@ -4381,7 +4517,7 @@
           daysLeft: o.daysLeft
         };
       });
-      byContact[contact.id] = { items: items, gold: state.gold, pending: pending };
+      byContact[contact.id] = { items: items, gold: _spendableGold(), pending: pending };
     });
     return byContact;
   }
@@ -4641,6 +4777,12 @@
     if (state.prices) delete state.prices;
     if (!Array.isArray(state.orders))   state.orders   = [];
     if (!Array.isArray(state.contacts)) state.contacts = defaultContacts();
+    /* 缺陷 D36：老存档没有 debtDays（欠债缓冲期是这一轮才加的字段）。
+     * 不兜住就是 undefined —— 比较的时候 undefined >= 7 是 false，
+     * 于是老档玩家永远收不了场，缺陷等于没修。
+     * （读取处也写了 `state.debtDays || 0`，两处都要有：
+     * 迁移负责「进档就补齐」，读取负责「任何时候都不可能是 NaN」。） */
+    if (!Number.isFinite(state.debtDays)) state.debtDays = 0;
     if (!Array.isArray(state.todayNPCs)) state.todayNPCs = [];
     /* 记事档案（缺陷 D29）：旧存档没有 log 字段，补一份空数组，
      * 否则第一次归档就会炸。 */

@@ -99,12 +99,24 @@ function createSession(seed, random) {
     save(){ this.values.set(SAVE_KEY, JSON.stringify(this.state())); return this.values.get(SAVE_KEY); }
   };
 }
-/* getState() 是深拷贝 —— 要改活状态只能写存档再重载。 */
+/* getState() 是深拷贝 —— 要改活状态只能写存档再重载。
+ *
+ * 重载出来的会话一律用**确定的**随机数（见 NO_MARKET_EVENTS）。
+ *
+ * 原因：行情每天有 15% 的概率落一条随机冲击（core 的 advanceDay）。
+ * 这几���断言盯的是「断供结束后系数精确回到基线」，
+ * 而 endDay() 会推进行情 —— 撞上那条随机冲击，
+ * 系数就变成 1.0 + 0.5 = 1.5，断言报的是**假红**。
+ *
+ * 这不是「把测试调松」，是**把与被测行为无关的随机源钉死**：
+ * 被验的是断供的还原逻辑，不是随机事件的落点。
+ * 落点的随机性由 tests/market-rules.cjs 单独验（那里用的是可播种的随机数）。 */
+const NO_MARKET_EVENTS = () => 0.9;   // 0.9 < 0.15 为假 → 永远不落随机冲击
 function rewrite(s, mutate) {
   const live = s.state();
   mutate(live);
   s.values.set(SAVE_KEY, JSON.stringify(live));
-  return createSession({[SAVE_KEY]: s.values.get(SAVE_KEY)});
+  return createSession({[SAVE_KEY]: s.values.get(SAVE_KEY)}, NO_MARKET_EVENTS);
 }
 
 /* ══ 一、缺 market 的存档必须读得进来（缺陷 D15） ═══════════ */
